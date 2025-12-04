@@ -8,8 +8,9 @@ import streamlit as st
 import pandas as pd
 import time
 from datetime import date, timedelta, datetime
-from collections import Counter
+from collections import Counter, defaultdict
 import logging
+import pytz
 
 from src.historial_client import HistorialClient
 from src.model import MarkovModel
@@ -26,6 +27,7 @@ from src.ml_model import MLPredictor, HAS_ML
 from src.backtesting import Backtester
 from src.visualizer import Visualizer
 from src.ml_optimizer import MLOptimizer
+from src.prediction_logger import PredictionLogger
 
 # Configuración de la página
 st.set_page_config(
@@ -173,11 +175,30 @@ def main():
         
         # Modo En Vivo
         st.markdown("### ⏱️ Tiempo Real")
-        auto_update = st.toggle("Activar Modo Tiempo Real", value=False, key="toggle_realtime")
+        auto_update = st.toggle("Activar Modo Tiempo Real", value=True, key="toggle_realtime")
         
         refresh_rate = 60
+        is_sleeping = False
+        
         if auto_update:
-            refresh_rate = st.slider("Intervalo (segundos)", 30, 300, 60, help="Frecuencia de búsqueda de nuevos resultados.")
+            # Configuración de Horario Operativo (Caracas)
+            tz_caracas = pytz.timezone('America/Caracas')
+            now_caracas = datetime.now(tz_caracas)
+            current_hour = now_caracas.hour
+            
+            # Rango: 6 AM (06:00) a 9 PM (21:00)
+            # Se ejecuta si hora >= 6 y hora < 21 (hasta las 20:59)
+            # O si el usuario quiere hasta las 9 PM inclusive (hasta 21:59), sería hora <= 21.
+            # "Desactive a las 9 PM" suele significar que a las 21:00 para.
+            # Asumiremos operativo de 06:00 a 21:00 (exclusivo 21:00? o inclusivo?)
+            # Normalmente los sorteos son hasta las 7 PM u 8 PM. 9 PM es seguro.
+            if 6 <= current_hour < 21:
+                st.success(f"🟢 Operativo ({now_caracas.strftime('%I:%M %p')})")
+                refresh_rate = st.slider("Intervalo (segundos)", 60, 3600, 3600, help="Frecuencia de búsqueda (por defecto 1 hora).")
+            else:
+                st.warning(f"💤 Modo Dormido ({now_caracas.strftime('%I:%M %p')})")
+                st.caption("Horario: 06:00 AM - 09:00 PM (Caracas)")
+                is_sleeping = True
             
             # Indicador de estado
             last_upd = st.session_state.get('last_update', 0)
@@ -188,7 +209,8 @@ def main():
         trigger_load = st.button("Cargar Historial", type="primary")
         
         # Lógica de carga INICIAL o MANUAL (Carga completa del rango)
-        if trigger_load:
+        # Se ejecuta si se presiona el botón O si no hay datos en sesión
+        if trigger_load or 'historial' not in st.session_state:
             if start_date > end_date:
                 st.error("La fecha de inicio no puede ser mayor a la fecha fin.")
             else:
@@ -209,7 +231,7 @@ def main():
                         st.error(f"Error inesperado: {e}")
 
         # Lógica de ACTUALIZACIÓN INCREMENTAL (Solo hoy)
-        if auto_update and 'historial' in st.session_state:
+        if auto_update and not is_sleeping and 'historial' in st.session_state:
             last_upd = st.session_state.get('last_update', 0)
             if time.time() - last_upd > refresh_rate:
                 # Ejecutar actualización en segundo plano (visual)
@@ -233,6 +255,12 @@ def main():
                         st.toast(f"🎉 ¡{nuevos} nuevos resultados recibidos!", icon="🔔")
                         # Actualizar fecha fin si hoy es mayor a lo que había
                         st.session_state['fecha_fin'] = today_str
+                        
+                        # --- HU-019: Logging Automático del Resultado Real ---
+                        # Si llegó un resultado nuevo, deberíamos registrar si acertamos o no
+                        # Esto requiere saber cuál fue el último sorteo añadido.
+                        # Por simplicidad, el usuario verá el resultado en la UI.
+                        # Para cerrar el ciclo ML completo, se necesitaría un proceso más complejo aquí.
                     
                 except Exception as e:
                     status_placeholder.empty()
@@ -328,6 +356,90 @@ def main():
             
             # Encabezado
             st.info(f"**Periodo:** {reporte.rango_fechas} | **Sorteos:** {reporte.total_sorteos} | **Actualizado:** {datetime.now().strftime('%H:%M')}")
+            
+            # --- SECCIÓN DE EFICACIA DEL BOT (HU-018) ---
+            st.subheader("🤖 Eficacia del Bot (Recomendador)")
+            
+            # Calcular métricas solo si hay datos suficientes
+            if data.total_sorteos > 10:
+                with st.spinner("Calculando eficacia del bot..."):
+                    backtester = Backtester(data, gestor)
+                    
+                    # Configuración del bot (Solo Recomendador para esta métrica)
+                    bot_config = {"Markov": False, "ML": False, "Recomendador": True}
+                    
+                    # 1. Eficacia Diaria (Día seleccionado en Fecha Fin)
+                    # Usamos end_date seleccionado por el usuario como "Día Objetivo"
+                    target_day = end_date.strftime("%Y-%m-%d")
+                    res_diario = backtester.run(target_day, target_day, bot_config)
+                    metrics_diario = res_diario["summary"].get("Recomendador", {})
+                    
+                    # 2. Eficacia Semanal (Últimos 7 días hasta Fecha Fin)
+                    week_start = end_date - timedelta(days=6) # 7 días incluyendo hoy
+                    week_start_str = week_start.strftime("%Y-%m-%d")
+                    res_semanal = backtester.run(week_start_str, target_day, bot_config)
+                    metrics_semanal = res_semanal["summary"].get("Recomendador", {})
+                    
+                    # Mostrar Tarjetas
+                    col_eff1, col_eff2, col_eff3, col_eff4 = st.columns(4)
+                    
+                    # Helper para formatear
+                    def fmt_pct(val): return f"{val*100:.1f}%"
+                    
+                    # Diaria
+                    d_top1 = metrics_diario.get("Top1_Pct", 0)
+                    d_top3 = metrics_diario.get("Top3_Pct", 0)
+                    d_total = metrics_diario.get("Total", 0)
+                    
+                    # Semanal
+                    w_top1 = metrics_semanal.get("Top1_Pct", 0)
+                    w_top3 = metrics_semanal.get("Top3_Pct", 0)
+                    w_total = metrics_semanal.get("Total", 0)
+                    
+                    with col_eff1:
+                        st.metric("Eficacia Diaria (Top 1)", fmt_pct(d_top1), help=f"{metrics_diario.get('Top1',0)}/{d_total} aciertos")
+                    with col_eff2:
+                        st.metric("Eficacia Diaria (Top 3)", fmt_pct(d_top3), help=f"{metrics_diario.get('Top3',0)}/{d_total} aciertos")
+                    with col_eff3:
+                        st.metric("Eficacia Semanal (Top 1)", fmt_pct(w_top1), help=f"{metrics_semanal.get('Top1',0)}/{w_total} aciertos")
+                    with col_eff4:
+                        st.metric("Eficacia Semanal (Top 3)", fmt_pct(w_top3), help=f"{metrics_semanal.get('Top3',0)}/{w_total} aciertos")
+                    
+                    # Tabla Detalle
+                    with st.expander("📊 Ver Detalle de Rendimiento"):
+                        eff_data = [
+                            {"Métrica": "Aciertos Top 1", "Día": f"{metrics_diario.get('Top1',0)}/{d_total}", "Semana": f"{metrics_semanal.get('Top1',0)}/{w_total}"},
+                            {"Métrica": "Aciertos Top 3", "Día": f"{metrics_diario.get('Top3',0)}/{d_total}", "Semana": f"{metrics_semanal.get('Top3',0)}/{w_total}"},
+                            {"Métrica": "Eficacia Top 1", "Día": fmt_pct(d_top1), "Semana": fmt_pct(w_top1)},
+                            {"Métrica": "Eficacia Top 3", "Día": fmt_pct(d_top3), "Semana": fmt_pct(w_top3)},
+                        ]
+                        st.dataframe(eff_data, use_container_width=True)
+                    
+                    # Gráfico Sparkline Semanal (Tendencia diaria de los últimos 7 días)
+                    # Necesitamos agrupar los resultados semanales por día
+                    if res_semanal["raw"]:
+                        daily_acc = defaultdict(list)
+                        for r in res_semanal["raw"]:
+                            fecha = r["fecha"]
+                            # Verificar si acertó Top 3
+                            hit = 1 if r["aciertos"].get("Recomendador", {}).get("Top3", False) else 0
+                            daily_acc[fecha].append(hit)
+                        
+                        # Calcular % por día
+                        trend_data = []
+                        for d_str in sorted(daily_acc.keys()):
+                            hits = sum(daily_acc[d_str])
+                            total = len(daily_acc[d_str])
+                            pct = hits / total if total > 0 else 0
+                            trend_data.append({"Fecha": d_str, "Eficacia Top3": pct})
+                            
+                        if trend_data:
+                            st.markdown("##### 📈 Tendencia Semanal (Eficacia Top 3)")
+                            st.line_chart(trend_data, x="Fecha", y="Eficacia Top3", height=200)
+            else:
+                st.caption("Datos insuficientes para calcular eficacia.")
+            
+            st.markdown("---")
             
             # Bloque 1: Calientes y Fríos
             c1, c2 = st.columns(2)
@@ -692,7 +804,13 @@ def main():
             
             # Inicializar predictor en sesión si no existe
             if 'ml_predictor' not in st.session_state:
-                st.session_state['ml_predictor'] = MLPredictor(data)
+                # Intentar cargar modelo guardado
+                pred_temp = MLPredictor(data)
+                if pred_temp.load_model():
+                    st.session_state['ml_predictor'] = pred_temp
+                    st.toast("Modelo ML cargado desde disco.", icon="💾")
+                else:
+                    st.session_state['ml_predictor'] = pred_temp
             
             predictor = st.session_state['ml_predictor']
             # Actualizar datos si cambiaron (ej. tiempo real)
@@ -704,11 +822,20 @@ def main():
                 if st.button("🧠 Entrenar Modelo", type="primary"):
                     with st.spinner("Entrenando modelo de IA..."):
                         predictor.train()
-                        st.success("Modelo entrenado correctamente.")
+                        predictor.save_model() # Guardar tras entrenar
+                        st.success("Modelo entrenado y guardado correctamente.")
             
             with col_status:
                 if predictor.is_trained:
-                    st.success(f"✅ Modelo Activo (Entrenado: {predictor.last_training_time.strftime('%H:%M:%S')})")
+                    last_time = predictor.last_training_time
+                    if isinstance(last_time, str): # Si viene de JSON puede ser str
+                         try:
+                             last_time = datetime.fromisoformat(last_time)
+                         except:
+                             pass
+                    
+                    time_str = last_time.strftime('%Y-%m-%d %H:%M:%S') if isinstance(last_time, datetime) else str(last_time)
+                    st.success(f"✅ Modelo Activo (Entrenado: {time_str})")
                 else:
                     st.warning("⚠️ Modelo no entrenado. Pulsa el botón para iniciar.")
 
@@ -751,6 +878,11 @@ def main():
                     if not preds:
                         st.warning("No se pudo generar predicción (posiblemente datos desconocidos en la secuencia).")
                     else:
+                        # Registrar predicción (Logging)
+                        logger_pred = PredictionLogger()
+                        top_n_nums = [p.numero for p in preds[:5]]
+                        logger_pred.log_prediction(next_date, next_hour, top_n_nums)
+                        
                         # Mostrar Top 5
                         c1, c2 = st.columns([2, 1])
                         
@@ -805,6 +937,13 @@ def main():
                                 st.bar_chart(feat_dict)
                             else:
                                 st.caption("No disponible.")
+                            
+                            # Mostrar estado del log
+                            st.markdown("---")
+                            st.caption("📝 Predicción registrada en log para aprendizaje continuo.")
+                            if st.button("Ver Log Reciente"):
+                                logs = logger_pred.get_recent_logs(5)
+                                st.dataframe(logs)
 
     with tab_backtest:
         st.subheader("🧪 Validación Histórica (Backtesting)")
@@ -1037,6 +1176,12 @@ def main():
                 else:
                     st.error("Ingresa una secuencia válida.")
 
+        # Mostrar lista de patrones configurados (siempre visible para confirmar agregación)
+        if gestor.patrones:
+             with st.expander(f"📋 Ver Lista de Patrones Configurados ({len(gestor.patrones)})", expanded=False):
+                 p_data = [{"Nombre": p.nombre, "Secuencia": p.str_secuencia} for p in gestor.patrones]
+                 st.dataframe(p_data, use_container_width=True)
+
         # Obtener historial reciente plano para análisis
         # Necesitamos una lista cronológica de los últimos resultados
         # TableroAnalizer ya tiene una función para esto: get_ultimos_resultados
@@ -1075,7 +1220,8 @@ def main():
                     pass # Por ahora asumimos que empieza con numero como "24 Iguana"
         
         if not todos_resultados:
-            st.warning("No hay suficientes datos para analizar patrones.")
+            st.warning("No hay suficientes datos históricos cargados para analizar el progreso de los patrones.")
+            st.info("💡 Carga un rango de fechas en el menú lateral para ver si tus patrones se están cumpliendo.")
         else:
             # Analizar
             estados = gestor.analizar_patrones(todos_resultados)

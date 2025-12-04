@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import os
+import joblib
 from dataclasses import dataclass
 from typing import List, Dict, Any, Optional, Tuple
 import random
@@ -240,3 +242,41 @@ class MLPredictor:
             
         features.sort(key=lambda x: x.importance, reverse=True)
         return features
+
+    def save_model(self, path: str = "ml_model.joblib"):
+        """Guarda el modelo entrenado en disco."""
+        if not self.is_trained or not self.model:
+            logger.warning("No hay modelo entrenado para guardar.")
+            return
+        
+        try:
+            payload = {
+                "model": self.model,
+                "le_animal": self.le_animal,
+                "feature_names": self.feature_names,
+                "last_training_time": self.last_training_time,
+                "params": self.params
+            }
+            joblib.dump(payload, path)
+            logger.info(f"Modelo guardado en {path}")
+        except Exception as e:
+            logger.error(f"Error al guardar modelo: {e}")
+
+    def load_model(self, path: str = "ml_model.joblib") -> bool:
+        """Carga el modelo desde disco."""
+        if not os.path.exists(path):
+            return False
+            
+        try:
+            payload = joblib.load(path)
+            self.model = payload["model"]
+            self.le_animal = payload["le_animal"]
+            self.feature_names = payload["feature_names"]
+            self.last_training_time = payload["last_training_time"]
+            self.params = payload.get("params")
+            self.is_trained = True
+            logger.info(f"Modelo cargado desde {path}")
+            return True
+        except Exception as e:
+            logger.error(f"Error al cargar modelo: {e}")
+            return False

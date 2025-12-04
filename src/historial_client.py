@@ -8,11 +8,26 @@ import time
 
 import requests
 from bs4 import BeautifulSoup
+import unicodedata
 
 from .config import BASE_URL, USER_AGENT, TIMEOUT
 from .exceptions import ConnectionError, ScrapingError
+from .constantes import ANIMALITOS
 
 logger = logging.getLogger(__name__)
+
+def normalize_str(s: str) -> str:
+    """Elimina tildes y pasa a mayúsculas para comparación."""
+    return ''.join(c for c in unicodedata.normalize('NFD', s)
+                   if unicodedata.category(c) != 'Mn').upper()
+
+# Crear mapa de normalización al cargar el módulo
+# "CIEMPIES" -> "Ciempiés", "DELFIN" -> "Delfín"
+NORMALIZED_MAP = {}
+for nombre_oficial in ANIMALITOS.values():
+    key = normalize_str(nombre_oficial)
+    NORMALIZED_MAP[key] = nombre_oficial
+
 
 
 @dataclass
@@ -138,9 +153,27 @@ class HistorialClient:
                     for i, dia in enumerate(page_dias, start=1):
                         if i >= len(cols):
                             continue
-                        animal = cols[i].get_text(strip=True)
-                        if animal:
-                            all_tabla[(dia, hora)] = animal
+                        animal_raw = cols[i].get_text(strip=True)
+                        if animal_raw:
+                            # Normalizar nombre
+                            # El scraper trae ej: "03 Ciempies" o solo "Ciempies"?
+                            # Según debug trae "Ciempies" (sin número) o con número?
+                            # El debug mostró: 'Ciempies', 'Delfin'. Parece que trae solo el nombre o nombre limpio.
+                            # Pero en app.py vi lógica de split().
+                            # Asumamos que puede venir sucio.
+                            
+                            # Intentar separar si viene con número "03 Ciempies"
+                            parts = animal_raw.split()
+                            if len(parts) > 1 and parts[0].isdigit():
+                                nombre_sucio = " ".join(parts[1:])
+                            else:
+                                nombre_sucio = animal_raw
+                                
+                            # Buscar en mapa normalizado
+                            key_sucio = normalize_str(nombre_sucio)
+                            nombre_oficial = NORMALIZED_MAP.get(key_sucio, animal_raw) # Fallback al original si no encuentra
+                            
+                            all_tabla[(dia, hora)] = nombre_oficial
                             if dia not in all_dias:
                                 all_dias.append(dia)
                 
