@@ -1,0 +1,9 @@
+requests
+beautifulsoup4
+rich
+streamlit
+pandas
+openpyxl
+scikit-learn
+numpy
+altair
