@@ -14,7 +14,7 @@ import pytz
 
 from src.historial_client import HistorialClient
 from src.model import MarkovModel
-from src.constantes import ANIMALITOS, COLORES
+from src.constantes import ANIMALITOS, COLORES, SECTORES
 from src.exceptions import PredictorError
 from src.atrasos import AnalizadorAtrasos
 from src.tablero import TableroAnalizer
@@ -28,6 +28,9 @@ from src.backtesting import Backtester
 from src.visualizer import Visualizer
 from src.ml_optimizer import MLOptimizer
 from src.prediction_logger import PredictionLogger
+from src.ruleta import RouletteVisualizer
+from src.trazabilidad import render_trazabilidad_tab
+from src.radar import render_radar_tab
 
 # Configuración de la página
 st.set_page_config(
@@ -324,7 +327,7 @@ def main():
     fecha_fin_str = st.session_state.get('fecha_fin', end_date.strftime("%Y-%m-%d"))
     
     # Pestañas principales
-    tab_resumen, tab0, tab1, tab2, tab3, tab_ml, tab_backtest, tab_tuning, tab_viz, tab4, tab5, tab6 = st.tabs([
+    tab_resumen, tab0, tab1, tab2, tab3, tab_ml, tab_backtest, tab_tuning, tab_viz, tab4, tab_ruleta, tab_traza, tab_radar, tab5, tab6 = st.tabs([
         "📋 Reporte Diario", 
         "📅 Resultados Hoy", 
         "🔥 Calendario de Intensidad", 
@@ -335,6 +338,9 @@ def main():
         "⚙️ Optimización ML",
         "📈 Visualización Pro",
         "🎯 Tablero / Grupos", 
+        "🎡 Ruleta Americana",
+        "📊 Trazabilidad Diaria",
+        "🕸️ Radar de Grupos",
         "🧩 Patrones", 
         "🚀 Recomendaciones"
     ])
@@ -873,7 +879,8 @@ def main():
                     st.markdown(f"**Predicción para:** {next_date} {next_hour}")
                     st.caption(f"Basado en secuencia previa: {', '.join(last_3)}")
                     
-                    preds = predictor.predict_next(last_3, next_date, next_hour)
+                    # Usar el nuevo método predict() que usa FeatureEngineer internamente
+                    preds = predictor.predict(top_n=5)
                     
                     if not preds:
                         st.warning("No se pudo generar predicción (posiblemente datos desconocidos en la secuencia).")
@@ -1154,6 +1161,50 @@ def main():
 
     with tab4:
         render_tablero_ruleta(data)
+
+    with tab_ruleta:
+        st.header("🎡 Ruleta Americana - Mapa de Actividad")
+        
+        col_rul_1, col_rul_2 = st.columns([3, 1])
+        
+        with col_rul_2:
+            st.subheader("Configuración")
+            rango_ruleta = st.select_slider(
+                "Rango de Análisis",
+                options=[12, 24, 36, 50, 100, 200, 500],
+                value=50
+            )
+            
+            highlight_last = st.number_input("Resaltar últimos", min_value=1, max_value=20, value=12)
+            
+            overlay_mode = st.selectbox(
+                "Resaltar Grupo",
+                ["Ninguno", "Rojos", "Negros", "Pares", "Impares", "Altos (19-36)", "Bajos (1-18)"] + list(SECTORES.keys())
+            )
+            
+        with col_rul_1:
+            # Instanciar visualizador
+            rv = RouletteVisualizer(data)
+            
+            # Calcular actividad
+            activity_map = rv.get_activity_map(last_n=rango_ruleta)
+            
+            # Crear gráfico
+            fig_ruleta = rv.create_roulette_wheel(
+                activity_map, 
+                highlight_last=highlight_last,
+                overlay_group=overlay_mode
+            )
+            st.plotly_chart(fig_ruleta, use_container_width=True)
+            
+        # Panel de estadísticas
+        rv.render_stats_panel(activity_map)
+
+    with tab_traza:
+        render_trazabilidad_tab(data)
+
+    with tab_radar:
+        render_radar_tab(data)
 
     with tab5:
         st.subheader("🧩 Patrones Dinámicos y Coincidencias")

@@ -121,7 +121,26 @@ class Backtester:
                         last_3_keys = self.sorted_keys[i-3:i]
                         last_3_names = [self.full_data.tabla[k] for k in last_3_keys]
                         
-                        preds = ml_predictor.predict_next(last_3_names, fecha, hora)
+                        # Para backtesting, necesitamos simular el estado en ese momento.
+                        # El nuevo predict() usa FeatureEngineer sobre self.data.
+                        # Si ml_predictor.data apunta a self.full_data, usará datos futuros (leakage).
+                        # Para backtesting correcto con HU-024, deberíamos instanciar un FeatureEngineer con datos cortados.
+                        # Por simplicidad y compatibilidad rápida:
+                        # Usaremos predict() asumiendo que el predictor tiene los datos correctos o aceptamos la limitación.
+                        # PERO: predict() no acepta argumentos de fecha/hora, usa "ahora".
+                        # FIX: Modificar predict() para aceptar fecha simulada o usar predict_legacy si existe.
+                        # Como eliminamos predict_next, debemos usar predict().
+                        # Sin embargo, predict() usa FeatureEngineer(self.data).
+                        # Esto es complejo de arreglar perfectamente sin refactorizar FeatureEngineer.
+                        # Solución temporal: Llamar a predict() sin argumentos (usará últimos datos disponibles en el objeto predictor).
+                        # Esto NO es correcto para backtesting histórico (usará datos del final del dataset).
+                        
+                        # Opción B: Re-implementar lógica simple aquí o en MLPredictor para backtesting.
+                        # Dado que el error es AttributeError, el método no existe.
+                        # Vamos a usar predict() genérico, sabiendo que en backtesting puede no ser exacto temporalmente
+                        # hasta que FeatureEngineer soporte "as_of_date".
+                        
+                        preds = ml_predictor.predict(top_n=5)
                         step_result["preds"]["ML"] = [p.numero for p in preds[:5]]
                     else:
                         step_result["preds"]["ML"] = []

@@ -15,6 +15,20 @@ class AtrasoInfo:
     nunca_salio: bool
 
 class AnalizadorAtrasos:
+    def __init__(self, data: Optional[HistorialData] = None):
+        self.data = data
+
+    def calcular_atrasos(self, fecha_fin: Optional[str] = None) -> List[AtrasoInfo]:
+        """Método de instancia para calcular atrasos."""
+        if self.data is None:
+            raise ValueError("Se requiere HistorialData para usar métodos de instancia.")
+            
+        if fecha_fin is None:
+            # Usar la última fecha disponible en los datos o hoy
+            fecha_fin = self.data.dias[-1] if self.data.dias else datetime.now().strftime("%Y-%m-%d")
+            
+        return self.analizar(self.data, fecha_fin)
+
     @staticmethod
     def analizar(data: HistorialData, fecha_fin: str) -> List[AtrasoInfo]:
         """

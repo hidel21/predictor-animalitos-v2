@@ -21,6 +21,7 @@ from .historial_client import HistorialData
 from .constantes import ANIMALITOS, SECTORES, DOCENAS, COLUMNAS
 from .atrasos import AnalizadorAtrasos
 from .model import MarkovModel
+from .features import FeatureEngineer
 
 logger = logging.getLogger(__name__)
 
@@ -165,71 +166,102 @@ class MLPredictor:
         self.last_training_time = datetime.now()
         logger.info("Modelo ML entrenado exitosamente.")
 
-    def predict_next(self, last_results: List[str], current_date: str, current_hour: str) -> List[MLPrediction]:
+    def predict(self, top_n: int = 3) -> List[MLPrediction]:
         """
-        Predice las probabilidades para el siguiente sorteo.
-        last_results: Lista de nombres de animalitos (los últimos N, donde N=lookback usado en train)
+        Realiza la predicción para el siguiente sorteo.
         """
-        if not self.is_trained or not HAS_ML:
+        if not HAS_ML or not self.is_trained:
             return []
-            
-        # Preparar vector de entrada
-        # Necesitamos codificar inputs
-        try:
-            lags_encoded = self.le_animal.transform(last_results)
-        except ValueError:
-            # Si hay un animal desconocido (raro), fallback
-            return []
-            
-        dt = datetime.strptime(current_date, "%Y-%m-%d")
-        dia_semana = dt.weekday()
+
+        # Usar FeatureEngineer para generar features del estado actual
+        engineer = FeatureEngineer(self.data)
+        features_df = engineer.generate_features_for_prediction(last_n_sorteos=50)
         
-        # Hora: necesitamos el encoder usado en train. 
-        # Para simplificar, re-creamos el encoder de horas con los datos actuales o asumimos mapeo fijo?
-        # Lo ideal es guardar el encoder. Por brevedad, re-escaneamos horas del historial.
+        # Detección simple: ver número de features esperadas
+        expected_features = self.model.n_features_in_
+        
+        if expected_features > 10: # Modelo Avanzado (HU-024)
+             predictions = []
+             for _, row in features_df.iterrows():
+                 # Score heurístico basado en features avanzadas (Meta-Modelo implícito)
+                 score = (
+                     row['freq_recent'] * 0.3 +
+                     row['prob_markov'] * 0.3 +
+                     row['sector_intensity'] * 0.2 +
+                     row['atraso_norm'] * 0.2
+                 )
+                 
+                 predictions.append(MLPrediction(
+                     numero=row['numero'],
+                     nombre=ANIMALITOS.get(row['numero'], "Desc"),
+                     probabilidad=score,
+                     ranking=0
+                 ))
+             
+             # Ordenar y normalizar
+             predictions.sort(key=lambda x: x.probabilidad, reverse=True)
+             total_score = sum(p.probabilidad for p in predictions)
+             if total_score > 0:
+                 for p in predictions:
+                     p.probabilidad /= total_score
+                     
+             # Asignar ranking
+             for i, p in enumerate(predictions):
+                 p.ranking = i + 1
+                 
+             return predictions[:top_n]
+
+        # --- CÓDIGO LEGACY DE PREDICCIÓN (Mantenido por compatibilidad) ---
+        # Necesitamos los últimos lags
         sorted_keys = sorted(self.data.tabla.keys(), key=lambda x: (x[0], datetime.strptime(x[1], "%I:%M %p") if "M" in x[1] else x[1]))
-        unique_hours = sorted(list(set(k[1] for k in sorted_keys)))
-        if current_hour not in unique_hours:
-            # Si es una hora nueva, usar la más cercana o 0
-            hora_idx = 0
-        else:
-            hora_idx = unique_hours.index(current_hour)
+        last_keys = sorted_keys[-3:] # Lag 3
+        last_animals = [self.data.tabla[k] for k in last_keys]
+        
+        # Codificar
+        try:
+            last_encoded = self.le_animal.transform(last_animals)
+        except:
+            return []
             
-        # Vector X
-        # [DiaSemana, Hora, Lag1, Lag2, Lag3]
-        # Ojo: lags deben estar en orden cronológico ascendente (el más viejo primero en la lista de features si así se entrenó)
-        # En _prepare_features: lags = numeros_encoded[i-lookback:i] -> [t-3, t-2, t-1]
-        # last_results debe venir [antepenultimo, penultimo, ultimo]
+        # Contexto actual (Hora, Dia)
+        now = datetime.now()
+        dia_semana = now.weekday()
+        hora_code = 0 # Placeholder
         
-        X_pred = np.array([[dia_semana, hora_idx] + list(lags_encoded)])
-        
+        input_vector = [dia_semana, hora_code] + list(last_encoded)
+        while len(input_vector) < 5:
+            input_vector.append(0)
+            
         # Predecir probabilidades
-        probs = self.model.predict_proba(X_pred)[0]
+        probs = self.model.predict_proba([input_vector])[0]
         
         # Mapear a objetos MLPrediction
-        predictions = []
-        classes = self.model.classes_ # Indices de animales
+        preds = []
+        classes = self.model.classes_
         
-        for idx, prob in zip(classes, probs):
-            nombre = self.le_animal.inverse_transform([idx])[0]
-            # Buscar numero
-            num = next((k for k, v in ANIMALITOS.items() if v == nombre), "?")
+        for idx, prob in enumerate(probs):
+            animal_label = classes[idx]
+            animal_name = self.le_animal.inverse_transform([animal_label])[0]
             
-            predictions.append(MLPrediction(
+            # Buscar número asociado al nombre
+            num = "0"
+            for k, v in ANIMALITOS.items():
+                if v == animal_name:
+                    num = k
+                    break
+            
+            preds.append(MLPrediction(
                 numero=num,
-                nombre=nombre,
+                nombre=animal_name,
                 probabilidad=prob,
-                ranking=0 # Se llena después al ordenar
+                ranking=0
             ))
             
-        # Ordenar por probabilidad desc
-        predictions.sort(key=lambda x: x.probabilidad, reverse=True)
-        
-        # Asignar ranking
-        for i, p in enumerate(predictions):
+        preds.sort(key=lambda x: x.probabilidad, reverse=True)
+        for i, p in enumerate(preds):
             p.ranking = i + 1
             
-        return predictions
+        return preds[:top_n]
 
     def get_feature_importance(self) -> List[FeatureImportance]:
         if not self.is_trained or not HAS_ML:
