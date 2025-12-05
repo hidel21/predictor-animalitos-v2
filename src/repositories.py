@@ -38,7 +38,9 @@ def insertar_sorteos(engine: Engine, historial_df: pd.DataFrame):
             query = text("""
                 INSERT INTO sorteos (fecha, hora, numero_real)
                 VALUES (:fecha, :hora, :numero)
-                ON CONFLICT (fecha, hora) DO NOTHING
+                ON CONFLICT (fecha, hora) DO UPDATE
+                SET numero_real = EXCLUDED.numero_real
+                WHERE sorteos.numero_real = -1 OR sorteos.numero_real IS NULL
             """)
             
             conn.execute(query, {
