@@ -249,14 +249,15 @@ def render_ia_patrones_tab(data, gestor: GestorPatrones, ml_predictor: MLPredict
                 nombre_animal = ANIMALITOS.get(num, "Desconocido")
                 
                 border_color = "#4CAF50" if data_n["score"] > 1 else "#FF9800"
-                bg_ia = "background: linear-gradient(to bottom right, #ffffff, #f3e5f5);" if data_n["ia"] else "background: white;"
-                shadow = "box-shadow: 0 4px 6px rgba(0,0,0,0.1);"
+                # Fondo oscuro para mejor contraste
+                bg_ia = "background: linear-gradient(to bottom right, #263238, #37474F);" if data_n["ia"] else "background-color: #212121;"
+                shadow = "box-shadow: 0 4px 6px rgba(0,0,0,0.3);"
                 
                 tags_html = ""
                 for p in data_n["patrones"][:2]: # Max 2 tags
-                    tags_html += f"<span style='font-size:0.65em; background:#e0e0e0; color:#333; padding:2px 4px; border-radius:4px; margin-right:2px;'>{p}</span>"
+                    tags_html += f"<span style='font-size:0.65em; background:#424242; color:#E0E0E0 !important; padding:2px 4px; border-radius:4px; margin-right:2px; border: 1px solid #616161;'>{p}</span>"
                 if data_n["ia"]:
-                    tags_html += "<span style='font-size:0.65em; background:#9C27B0; color:white; padding:2px 4px; border-radius:4px;'>IA</span>"
+                    tags_html += "<span style='font-size:0.65em; background:#AB47BC; color:white !important; padding:2px 4px; border-radius:4px;'>IA</span>"
                 
                 st.markdown(f"""
                 <div style="
@@ -268,14 +269,19 @@ def render_ia_patrones_tab(data, gestor: GestorPatrones, ml_predictor: MLPredict
                     text-align: center;
                     margin-bottom: 15px;
                     height: 100%;
+                    min-height: 100px;
                     display: flex;
                     flex-direction: column;
                     justify-content: center;
                     align-items: center;
                 ">
-                    <div style="font-size: 1.8em; font-weight: 800; color: #222 !important; line-height: 1;">{num}</div>
-                    <div style="font-size: 0.75em; color: #444 !important; margin-bottom: 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%;">{nombre_animal}</div>
-                    <div style="margin-top: auto;">{tags_html}</div>
+                    <div style="margin: 0; padding: 0; font-size: 1.8em; font-weight: 800; line-height: 1.2;">
+                        <span style="color: #FFFFFF !important;">{num}</span>
+                    </div>
+                    <div style="margin: 0; padding: 0; font-size: 0.9em; font-weight: bold; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; margin-top: 4px;">
+                        <span style="color: #B0BEC5 !important;">{nombre_animal}</span>
+                    </div>
+                    <div style="margin-top: 10px;">{tags_html}</div>
                 </div>
                 """, unsafe_allow_html=True)
 
