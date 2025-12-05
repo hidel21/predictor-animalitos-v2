@@ -9,3 +9,5 @@ numpy
 altair
 pytz
 plotly
+psycopg2-binary
+sqlalchemy

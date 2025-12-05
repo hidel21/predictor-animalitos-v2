@@ -31,6 +31,14 @@ from src.prediction_logger import PredictionLogger
 from src.ruleta import RouletteVisualizer
 from src.trazabilidad import render_trazabilidad_tab
 from src.radar import render_radar_tab
+from src.db import get_engine
+from src.repositories import (
+    insertar_sorteos, 
+    guardar_prediccion, 
+    actualizar_aciertos_predicciones, 
+    recalcular_metricas_por_fecha,
+    obtener_metricas
+)
 
 # Configuración de la página
 st.set_page_config(
@@ -160,6 +168,25 @@ def render_tablero_ruleta(data):
             st.progress(s.porcentaje_cobertura, text=f"{s.nombre}: {s.numeros_salidos}/{s.total_numeros}")
 
 def main():
+    # Inicializar conexión a BD
+    engine = None
+    try:
+        engine = get_engine()
+        if engine:
+            # Prueba de conexión explícita
+            with engine.connect() as conn:
+                from sqlalchemy import text
+                conn.execute(text("SELECT 1"))
+            st.toast("Conexión a Base de Datos: EXITOSA 🟢", icon="🗄️")
+            print("✅ [DB] Conexión a PostgreSQL establecida correctamente.")
+        else:
+            st.toast("Modo sin persistencia (BD no disponible)", icon="⚠️")
+    except Exception as e:
+        engine = None
+        st.toast("Conexión a Base de Datos: FALLIDA 🔴", icon="⚠️")
+        st.error(f"⚠️ Error de conexión a BD: {e}")
+        print(f"❌ [DB] Error de conexión: {e}")
+
     st.title("🐮 Predictor de Animalitos - La Granjita")
 
     # Sidebar para controles
@@ -224,6 +251,29 @@ def main():
                             start_date.strftime("%Y-%m-%d"),
                             end_date.strftime("%Y-%m-%d")
                         )
+                        
+                        # Guardar en BD (HU-028)
+                        if engine:
+                            try:
+                                rows = []
+                                for (d, h), val in data.tabla.items():
+                                    num = None
+                                    for k, v in ANIMALITOS.items():
+                                        if val.startswith(f"{k} ") or val == k or v in val:
+                                            num = k
+                                            break
+                                    if num:
+                                        rows.append({"fecha": d, "hora": h, "numero": num})
+                                
+                                if rows:
+                                    df_db = pd.DataFrame(rows)
+                                    insertar_sorteos(engine, df_db)
+                                    actualizar_aciertos_predicciones(engine)
+                                    recalcular_metricas_por_fecha(engine, "ML_RandomForest")
+                                    recalcular_metricas_por_fecha(engine, "Recomendador")
+                            except Exception as e:
+                                st.error(f"Error al guardar en BD: {e}")
+
                         st.session_state['historial'] = data
                         st.session_state['fecha_fin'] = end_date.strftime("%Y-%m-%d")
                         st.session_state['last_update'] = time.time()
@@ -247,6 +297,28 @@ def main():
                     
                     # Descargar solo hoy
                     new_data = client.fetch_historial(today_str, today_str)
+                    
+                    # Guardar en BD (HU-028)
+                    if engine and new_data.total_sorteos > 0:
+                        try:
+                            rows = []
+                            for (d, h), val in new_data.tabla.items():
+                                num = None
+                                for k, v in ANIMALITOS.items():
+                                    if val.startswith(f"{k} ") or val == k or v in val:
+                                        num = k
+                                        break
+                                if num:
+                                    rows.append({"fecha": d, "hora": h, "numero": num})
+                            
+                            if rows:
+                                df_db = pd.DataFrame(rows)
+                                insertar_sorteos(engine, df_db)
+                                actualizar_aciertos_predicciones(engine)
+                                recalcular_metricas_por_fecha(engine, "ML_RandomForest")
+                                recalcular_metricas_por_fecha(engine, "Recomendador")
+                        except Exception as e:
+                            print(f"Error DB incremental: {e}")
                     
                     # Fusionar
                     nuevos = st.session_state['historial'].merge(new_data)
@@ -367,83 +439,25 @@ def main():
             st.subheader("🤖 Eficacia del Bot (Recomendador)")
             
             # Calcular métricas solo si hay datos suficientes
-            if data.total_sorteos > 10:
-                with st.spinner("Calculando eficacia del bot..."):
-                    backtester = Backtester(data, gestor)
-                    
-                    # Configuración del bot (Solo Recomendador para esta métrica)
-                    bot_config = {"Markov": False, "ML": False, "Recomendador": True}
-                    
-                    # 1. Eficacia Diaria (Día seleccionado en Fecha Fin)
-                    # Usamos end_date seleccionado por el usuario como "Día Objetivo"
-                    target_day = end_date.strftime("%Y-%m-%d")
-                    res_diario = backtester.run(target_day, target_day, bot_config)
-                    metrics_diario = res_diario["summary"].get("Recomendador", {})
-                    
-                    # 2. Eficacia Semanal (Últimos 7 días hasta Fecha Fin)
-                    week_start = end_date - timedelta(days=6) # 7 días incluyendo hoy
-                    week_start_str = week_start.strftime("%Y-%m-%d")
-                    res_semanal = backtester.run(week_start_str, target_day, bot_config)
-                    metrics_semanal = res_semanal["summary"].get("Recomendador", {})
-                    
-                    # Mostrar Tarjetas
-                    col_eff1, col_eff2, col_eff3, col_eff4 = st.columns(4)
-                    
-                    # Helper para formatear
-                    def fmt_pct(val): return f"{val*100:.1f}%"
-                    
-                    # Diaria
-                    d_top1 = metrics_diario.get("Top1_Pct", 0)
-                    d_top3 = metrics_diario.get("Top3_Pct", 0)
-                    d_total = metrics_diario.get("Total", 0)
-                    
-                    # Semanal
-                    w_top1 = metrics_semanal.get("Top1_Pct", 0)
-                    w_top3 = metrics_semanal.get("Top3_Pct", 0)
-                    w_total = metrics_semanal.get("Total", 0)
-                    
-                    with col_eff1:
-                        st.metric("Eficacia Diaria (Top 1)", fmt_pct(d_top1), help=f"{metrics_diario.get('Top1',0)}/{d_total} aciertos")
-                    with col_eff2:
-                        st.metric("Eficacia Diaria (Top 3)", fmt_pct(d_top3), help=f"{metrics_diario.get('Top3',0)}/{d_total} aciertos")
-                    with col_eff3:
-                        st.metric("Eficacia Semanal (Top 1)", fmt_pct(w_top1), help=f"{metrics_semanal.get('Top1',0)}/{w_total} aciertos")
-                    with col_eff4:
-                        st.metric("Eficacia Semanal (Top 3)", fmt_pct(w_top3), help=f"{metrics_semanal.get('Top3',0)}/{w_total} aciertos")
-                    
-                    # Tabla Detalle
-                    with st.expander("📊 Ver Detalle de Rendimiento"):
-                        eff_data = [
-                            {"Métrica": "Aciertos Top 1", "Día": f"{metrics_diario.get('Top1',0)}/{d_total}", "Semana": f"{metrics_semanal.get('Top1',0)}/{w_total}"},
-                            {"Métrica": "Aciertos Top 3", "Día": f"{metrics_diario.get('Top3',0)}/{d_total}", "Semana": f"{metrics_semanal.get('Top3',0)}/{w_total}"},
-                            {"Métrica": "Eficacia Top 1", "Día": fmt_pct(d_top1), "Semana": fmt_pct(w_top1)},
-                            {"Métrica": "Eficacia Top 3", "Día": fmt_pct(d_top3), "Semana": fmt_pct(w_top3)},
-                        ]
-                        st.dataframe(eff_data, use_container_width=True)
-                    
-                    # Gráfico Sparkline Semanal (Tendencia diaria de los últimos 7 días)
-                    # Necesitamos agrupar los resultados semanales por día
-                    if res_semanal["raw"]:
-                        daily_acc = defaultdict(list)
-                        for r in res_semanal["raw"]:
-                            fecha = r["fecha"]
-                            # Verificar si acertó Top 3
-                            hit = 1 if r["aciertos"].get("Recomendador", {}).get("Top3", False) else 0
-                            daily_acc[fecha].append(hit)
+            if engine:
+                try:
+                    df_metrics = obtener_metricas(engine, "Recomendador", limite_dias=7)
+                    if not df_metrics.empty:
+                        latest = df_metrics.iloc[0]
+                        col_eff1, col_eff2, col_eff3, col_eff4 = st.columns(4)
+                        col_eff1.metric("Eficacia Top 1 (Hoy)", f"{latest['eficacia_top1']}%")
+                        col_eff2.metric("Eficacia Top 3 (Hoy)", f"{latest['eficacia_top3']}%")
+                        col_eff3.metric("Aciertos Top 1", f"{latest['aciertos_top1']}/{latest['sorteos']}")
+                        col_eff4.metric("Aciertos Top 3", f"{latest['aciertos_top3']}/{latest['sorteos']}")
                         
-                        # Calcular % por día
-                        trend_data = []
-                        for d_str in sorted(daily_acc.keys()):
-                            hits = sum(daily_acc[d_str])
-                            total = len(daily_acc[d_str])
-                            pct = hits / total if total > 0 else 0
-                            trend_data.append({"Fecha": d_str, "Eficacia Top3": pct})
-                            
-                        if trend_data:
-                            st.markdown("##### 📈 Tendencia Semanal (Eficacia Top 3)")
-                            st.line_chart(trend_data, x="Fecha", y="Eficacia Top3", height=200)
+                        st.caption("Histórico de Eficacia (Últimos 7 días)")
+                        st.line_chart(df_metrics.set_index('fecha')[['eficacia_top1', 'eficacia_top3']])
+                    else:
+                        st.info("Aún no hay métricas registradas en la base de datos (se generarán con el uso continuo).")
+                except Exception as e:
+                    st.error(f"Error leyendo métricas de BD: {e}")
             else:
-                st.caption("Datos insuficientes para calcular eficacia.")
+                st.warning("Conexión a BD no disponible. No se pueden mostrar métricas históricas reales.")
             
             st.markdown("---")
             
@@ -463,14 +477,20 @@ def main():
             # Bloque 2: Patrones y Sectores
             c3, c4 = st.columns(2)
             with c3:
-                st.markdown("#### 🧩 Patrones Destacados")
+                st.markdown("#### 🧩 Patrones Activos Hoy")
                 if not reporte.patrones_activos:
-                    st.caption("Sin actividad relevante.")
-                for p in reporte.patrones_activos:
-                    icon = "✅" if p['es_completo'] else "⚠️" if p['progreso'] > 0.6 else "🔵"
-                    st.markdown(f"{icon} **{p['nombre']}**: {int(p['progreso']*100)}% ({p['aciertos']}/{p['total']})")
-                    if p['siguiente']:
-                        st.caption(f"👉 Esperando: {p['siguiente']}")
+                    st.caption("Sin actividad relevante hoy.")
+                
+                # Mostrar tabla simplificada
+                for p in reporte.patrones_activos[:5]: # Top 5
+                    icon = "⭐️" if p.get('prioritario') else "🔹"
+                    progreso_pct = int(p['progreso']*100)
+                    ultimo = p.get('ultimo_acierto', '-')
+                    hora = p.get('hora_ultimo', '')
+                    
+                    st.markdown(f"{icon} **{p['nombre']}**")
+                    st.progress(p['progreso'], text=f"Progreso: {progreso_pct}% | Último: {ultimo} ({hora})")
+                    
             with c4:
                 st.markdown("#### 📊 Sectores Activos")
                 # Mostrar top 3 sectores
@@ -723,15 +743,18 @@ def main():
                     estado = "🟡 Atrasado"
                 
                 rows.append({
-                    "Animalito": item.animal,
-                    "Estado": estado,
-                    "Sorteos sin Salir": item.sorteos_sin_salir,
-                    "Días sin Salir": dias_str,
-                    "Última Fecha": ultima_fecha
+                    "Animalito": str(item.animal), # Force string
+                    "Estado": str(estado),
+                    "Sorteos sin Salir": int(item.sorteos_sin_salir),
+                    "Días sin Salir": str(dias_str),
+                    "Última Fecha": str(ultima_fecha)
                 })
             
+            df_atrasos = pd.DataFrame(rows)
+            # print(f"DEBUG Atrasos dtypes:\n{df_atrasos.dtypes}")
+            
             st.dataframe(
-                rows,
+                df_atrasos,
                 use_container_width=True,
                 column_config={
                     "Estado": st.column_config.TextColumn(
@@ -890,6 +913,28 @@ def main():
                         top_n_nums = [p.numero for p in preds[:5]]
                         logger_pred.log_prediction(next_date, next_hour, top_n_nums)
                         
+                        # Guardar en BD (HU-028)
+                        if engine:
+                            try:
+                                d_obj = datetime.strptime(next_date, "%Y-%m-%d").date()
+                                top1 = int(preds[0].numero)
+                                top3 = [int(p.numero) for p in preds[:3]]
+                                top5 = [int(p.numero) for p in preds[:5]]
+                                probs = {p.numero: p.probabilidad for p in preds[:5]}
+                                
+                                guardar_prediccion(
+                                    engine, 
+                                    d_obj, 
+                                    next_hour, 
+                                    "ML_RandomForest", 
+                                    top1, 
+                                    top3, 
+                                    top5, 
+                                    probs
+                                )
+                            except Exception as e:
+                                print(f"Error guardando predicción ML: {e}")
+                        
                         # Mostrar Top 5
                         c1, c2 = st.columns([2, 1])
                         
@@ -900,41 +945,47 @@ def main():
                             data_preds = []
                             for p in preds[:5]: # Mostrar Top 5
                                 data_preds.append({
-                                    "Ranking": p.ranking,
-                                    "Número": p.numero,
-                                    "Animal": p.nombre,
-                                    "Probabilidad": p.probabilidad
+                                    "Ranking": int(p.ranking),
+                                    "Número": str(p.numero), # Asegurar string para evitar ArrowTypeError
+                                    "Animal": str(p.nombre),
+                                    "Probabilidad": float(p.probabilidad)
                                 })
                             
                             df_preds = pd.DataFrame(data_preds)
+                            # Forzar tipos explícitamente para evitar ArrowTypeError
+                            if not df_preds.empty:
+                                df_preds["Ranking"] = df_preds["Ranking"].astype(str) # Changed to str to debug ArrowTypeError
+                                df_preds["Número"] = df_preds["Número"].astype(str)
+                                df_preds["Animal"] = df_preds["Animal"].astype(str)
+                                df_preds["Probabilidad"] = df_preds["Probabilidad"].astype(float)
                             
-                            st.dataframe(
-                                df_preds,
-                                column_config={
-                                    "Ranking": st.column_config.NumberColumn(
-                                        "Rank",
-                                        format="#%d",
-                                        width="small"
-                                    ),
-                                    "Número": st.column_config.TextColumn(
-                                        "Nro",
-                                        width="small"
-                                    ),
-                                    "Animal": st.column_config.TextColumn(
-                                        "Animalito",
-                                        width="medium"
-                                    ),
-                                    "Probabilidad": st.column_config.ProgressColumn(
-                                        "Confianza",
-                                        format="%.1f%%",
-                                        min_value=0,
-                                        max_value=1, # Probabilidad viene en 0-1
-                                        width="medium"
-                                    ),
-                                },
-                                hide_index=True,
-                                use_container_width=True
-                            )
+                            # st.dataframe(
+                            #     df_preds,
+                            #     column_config={
+                            #         "Ranking": st.column_config.TextColumn( # Changed to TextColumn
+                            #             "Rank",
+                            #             width="small"
+                            #         ),
+                            #         "Número": st.column_config.TextColumn(
+                            #             "Nro",
+                            #             width="small"
+                            #         ),
+                            #         "Animal": st.column_config.TextColumn(
+                            #             "Animalito",
+                            #             width="medium"
+                            #         ),
+                            #         "Probabilidad": st.column_config.ProgressColumn(
+                            #             "Confianza",
+                            #             format="%.1f%%",
+                            #             min_value=0,
+                            #             max_value=1, # Probabilidad viene en 0-1
+                            #             width="medium"
+                            #         ),
+                            #     },
+                            #     hide_index=True,
+                            #     use_container_width=True
+                            # )
+                            st.write("DEBUG: Dataframe ML disabled")
                                 
                         with c2:
                             st.markdown("#### 📊 Importancia de Variables")
@@ -1163,42 +1214,9 @@ def main():
         render_tablero_ruleta(data)
 
     with tab_ruleta:
-        st.header("🎡 Ruleta Americana - Mapa de Actividad")
-        
-        col_rul_1, col_rul_2 = st.columns([3, 1])
-        
-        with col_rul_2:
-            st.subheader("Configuración")
-            rango_ruleta = st.select_slider(
-                "Rango de Análisis",
-                options=[12, 24, 36, 50, 100, 200, 500],
-                value=50
-            )
-            
-            highlight_last = st.number_input("Resaltar últimos", min_value=1, max_value=20, value=12)
-            
-            overlay_mode = st.selectbox(
-                "Resaltar Grupo",
-                ["Ninguno", "Rojos", "Negros", "Pares", "Impares", "Altos (19-36)", "Bajos (1-18)"] + list(SECTORES.keys())
-            )
-            
-        with col_rul_1:
-            # Instanciar visualizador
-            rv = RouletteVisualizer(data)
-            
-            # Calcular actividad
-            activity_map = rv.get_activity_map(last_n=rango_ruleta)
-            
-            # Crear gráfico
-            fig_ruleta = rv.create_roulette_wheel(
-                activity_map, 
-                highlight_last=highlight_last,
-                overlay_group=overlay_mode
-            )
-            st.plotly_chart(fig_ruleta, use_container_width=True)
-            
-        # Panel de estadísticas
-        rv.render_stats_panel(activity_map)
+        # HU-026: Visualización Avanzada de Ruleta
+        rv = RouletteVisualizer(data)
+        rv.render()
 
     with tab_traza:
         render_trazabilidad_tab(data)
@@ -1207,52 +1225,19 @@ def main():
         render_radar_tab(data)
 
     with tab5:
-        st.subheader("🧩 Patrones Dinámicos y Coincidencias")
+        st.subheader("🧩 Patrones Activos del Día")
         
         gestor = st.session_state['gestor_patrones']
         
-        # Sección de agregar patrón
-        with st.expander("➕ Agregar Nuevo Patrón"):
-            c1, c2 = st.columns([3, 1])
-            with c1:
-                nuevo_patron_str = st.text_input("Secuencia (ej. 01-06-04 o 1 6 4)", key="new_patron_input")
-            with c2:
-                nombre_patron = st.text_input("Nombre (Opcional)", value="Mi Patrón", key="new_patron_name")
-                
-            if st.button("Agregar Patrón"):
-                if nuevo_patron_str:
-                    gestor.agregar_patron(nuevo_patron_str, nombre_patron)
-                    st.success(f"Patrón agregado: {nuevo_patron_str}")
-                    st.rerun()
-                else:
-                    st.error("Ingresa una secuencia válida.")
-
-        # Mostrar lista de patrones configurados (siempre visible para confirmar agregación)
-        if gestor.patrones:
-             with st.expander(f"📋 Ver Lista de Patrones Configurados ({len(gestor.patrones)})", expanded=False):
-                 p_data = [{"Nombre": p.nombre, "Secuencia": p.str_secuencia} for p in gestor.patrones]
-                 st.dataframe(p_data, use_container_width=True)
-
-        # Obtener historial reciente plano para análisis
-        # Necesitamos una lista cronológica de los últimos resultados
-        # TableroAnalizer ya tiene una función para esto: get_ultimos_resultados
-        # Pero necesitamos TODOS los resultados ordenados para buscar patrones largos
-        # Usaremos una versión modificada o la misma con N grande
-        
-        # Obtener todos los resultados ordenados cronológicamente
-        todos_resultados = []
-        # Ordenar días
-        dias_ordenados = sorted(data.dias)
-        # Ordenar horas (asumiendo formato consistente o orden de inserción si python >= 3.7 dicts)
-        # Mejor re-extraer con lógica de fecha/hora
-        
-        # Reconstruir lista plana cronológica
-        # data.tabla es (dia, hora) -> animal
-        # Iteramos dias y horas
-        for d in dias_ordenados:
-            # Filtrar horas para este día
-            horas_dia = [h for (dia, h) in data.tabla.keys() if dia == d]
-            # Ordenar horas. Formato "08:00 AM".
+        # Obtener resultados del día actual
+        resultados_dia = []
+        if data.dias:
+            dia_analisis = data.dias[-1]
+            st.caption(f"Analizando patrones para el día: **{dia_analisis}**")
+            
+            # Extraer resultados cronológicos del día
+            horas_dia = [h for (d, h) in data.tabla.keys() if d == dia_analisis]
+            # Ordenar horas
             def hora_key(h_str):
                 try:
                     return datetime.strptime(h_str, "%I:%M %p")
@@ -1261,116 +1246,65 @@ def main():
             horas_dia.sort(key=hora_key)
             
             for h in horas_dia:
-                val = data.tabla[(d, h)]
+                val = data.tabla[(dia_analisis, h)]
                 # Extraer número
-                parts = val.split()
-                if parts and parts[0].isdigit():
-                    todos_resultados.append(parts[0])
-                else:
-                    # Intentar buscar en ANIMALITOS values
-                    pass # Por ahora asumimos que empieza con numero como "24 Iguana"
+                num = None
+                for k, v in ANIMALITOS.items():
+                    if val.startswith(f"{k} ") or val == k or v in val:
+                        num = k
+                        break
+                if num:
+                    resultados_dia.append((h, num))
         
-        if not todos_resultados:
-            st.warning("No hay suficientes datos históricos cargados para analizar el progreso de los patrones.")
-            st.info("💡 Carga un rango de fechas en el menú lateral para ver si tus patrones se están cumpliendo.")
+        if not resultados_dia:
+            st.warning("No hay datos para el día actual.")
         else:
-            # Analizar
-            estados = gestor.analizar_patrones(todos_resultados)
+            # Procesar
+            estados = gestor.procesar_dia(resultados_dia)
             
-            # Preparar datos para exportación
-            patrones_export = []
-            for estado in estados:
-                p = estado.patron
-                patrones_export.append({
-                    "Nombre": p.nombre,
-                    "Secuencia": p.str_secuencia,
-                    "Progreso": f"{estado.progreso*100:.0f}%",
-                    "Aciertos": estado.aciertos,
-                    "Total Pasos": len(p.secuencia),
-                    "Estado": "Completado" if estado.es_completo else "En Progreso" if estado.progreso > 0 else "Inactivo",
-                    "Siguiente Esperado": estado.siguiente if estado.siguiente else "-"
-                })
+            # Filtrar solo activos (aciertos > 0)
+            activos = [e for e in estados if e.aciertos_hoy > 0]
             
-            st.markdown("### Estado de Patrones Activos")
-            
-            # Botón de exportación al inicio o final. Lo pondremos al inicio para visibilidad rápida
-            if patrones_export:
-                csv_patrones = Exporter.to_csv(patrones_export)
-                st.download_button("📥 Descargar Reporte de Patrones (CSV)", data=csv_patrones, file_name="patrones_activos.csv", mime="text/csv")
-            
-            if not estados:
-                st.info("No hay patrones configurados.")
-            
-            for estado in estados:
-                p = estado.patron
+            if not activos:
+                st.info("Ningún patrón del catálogo se ha activado hoy.")
+            else:
+                # Preparar DataFrame para mostrar
+                table_data = []
+                for e in activos:
+                    prioridad = "⭐️" if e.patron.prioritario else ""
+                    table_data.append({
+                        "Prioridad": prioridad,
+                        "Definición": e.patron.descripcion_original,
+                        "Secuencia": e.patron.str_secuencia,
+                        "Aciertos": e.aciertos_hoy,
+                        "Progreso": f"{e.progreso:.1f}%",
+                        "Último": f"{e.ultimo_acierto} ({e.hora_ultimo_acierto})"
+                    })
                 
-                # Color de la tarjeta según estado
-                border_color = "#ddd"
-                bg_color = "#f9f9f9"
-                status_icon = "⚪"
+                # st.dataframe(
+                #     pd.DataFrame(table_data),
+                #     use_container_width=True,
+                #     hide_index=True
+                # )
+                st.write("DEBUG: Dataframe Patterns disabled")
                 
-                if estado.es_completo:
-                    border_color = "#4CAF50" # Verde
-                    bg_color = "#e8f5e9"
-                    status_icon = "✅ COMPLETADO"
-                elif estado.progreso > 0.5:
-                    border_color = "#FF9800" # Naranja
-                    bg_color = "#fff3e0"
-                    status_icon = "🔥 ALTA PROBABILIDAD"
-                elif estado.progreso > 0:
-                    border_color = "#2196F3" # Azul
-                    bg_color = "#e3f2fd"
-                    status_icon = "🔵 EN PROGRESO"
+                # Detalles visuales (Tarjetas para los prioritarios)
+                st.markdown("### 🔥 Patrones Prioritarios Activos")
+                prioritarios = [e for e in activos if e.patron.prioritario]
+                if not prioritarios:
+                    st.caption("No hay patrones prioritarios activos.")
                 
-                # Calcular probabilidad Markov si hay siguiente esperado
-                prob_msg = ""
-                if estado.siguiente and not estado.es_completo:
-                    # Usar el último número salido (que coincide con el último del match)
-                    # El último del match es el último de todos_resultados
-                    ultimo_real = todos_resultados[-1]
-                    
-                    # Crear modelo rápido (o cachearlo)
-                    # Solo necesitamos next_probs para ultimo_real
-                    # Pero MarkovModel usa nombres de animales, y aquí tenemos números.
-                    # Necesitamos convertir numero -> nombre
-                    nombre_ultimo = ANIMALITOS.get(ultimo_real, "")
-                    nombre_siguiente = ANIMALITOS.get(estado.siguiente, "")
-                    
-                    if nombre_ultimo and nombre_siguiente:
-                        model = MarkovModel.from_historial(data, mode="sequential")
-                        probs = model.next_probs(nombre_ultimo)
-                        prob_val = probs.get(nombre_siguiente, 0.0)
-                        prob_msg = f" | 🎲 Prob. Márkov: **{prob_val*100:.1f}%**"
-
-                st.markdown(f"""
-                <div style="
-                    border: 2px solid {border_color};
-                    border-radius: 10px;
-                    padding: 15px;
-                    margin-bottom: 10px;
-                    background-color: {bg_color};
-                ">
-                    <div style="display: flex; justify-content: space-between; align-items: center;">
-                        <h4 style="margin: 0;">{p.nombre}</h4>
-                        <span style="font-weight: bold; color: #333;">{status_icon}</span>
-                    </div>
-                    <div style="margin-top: 10px; font-family: monospace; font-size: 1.1em;">
-                        Secuencia: <b>{p.str_secuencia}</b>
-                    </div>
-                    <div style="margin-top: 5px;">
-                        Progreso: {estado.aciertos}/{len(p.secuencia)} aciertos
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
-                
-                st.progress(estado.progreso)
-                
-                if estado.siguiente:
-                    nombre_sig = ANIMALITOS.get(estado.siguiente, "Desconocido")
-                    st.markdown(f"👉 **Siguiente Esperado:** `{estado.siguiente} - {nombre_sig}` {prob_msg}")
-                elif estado.es_completo:
-                    st.success(f"¡Patrón completado! Último número: {todos_resultados[-1]}")
-
+                cols = st.columns(3)
+                for idx, e in enumerate(prioritarios):
+                    with cols[idx % 3]:
+                        st.markdown(f"""
+                        <div style="padding: 10px; border: 2px solid #FFD700; border-radius: 5px; background-color: #FFFBE6; color: #333333;">
+                            <strong>{e.patron.descripcion_original}</strong><br>
+                            Progreso: {e.progreso:.1f}%<br>
+                            <small>Último: {e.ultimo_acierto} ({e.hora_ultimo_acierto})</small>
+                        </div>
+                        """, unsafe_allow_html=True)
+    
     with tab6:
         st.subheader("🚀 Motor de Recomendación Avanzada")
         st.caption("Ranking inteligente basado en múltiples factores ponderados.")
@@ -1399,6 +1333,38 @@ def main():
             peso_sector=w_sector,
             peso_patron=w_patron
         )
+        
+        # Guardar en BD (HU-028)
+        if engine and scores:
+            try:
+                # Simular siguiente fecha/hora (misma lógica que ML)
+                now = datetime.now()
+                next_date = now.strftime("%Y-%m-%d")
+                next_hour_int = (now.hour + 1) % 24
+                ampm = "AM" if next_hour_int < 12 else "PM"
+                h_12 = next_hour_int if next_hour_int <= 12 else next_hour_int - 12
+                if h_12 == 0: h_12 = 12
+                next_hour = f"{h_12:02d}:00 {ampm}"
+                
+                d_obj = datetime.strptime(next_date, "%Y-%m-%d").date()
+                
+                top1 = int(scores[0].numero)
+                top3 = [int(s.numero) for s in scores[:3]]
+                top5 = [int(s.numero) for s in scores[:5]]
+                probs = {s.numero: s.score_total for s in scores[:5]} # Usamos score como prob
+                
+                guardar_prediccion(
+                    engine, 
+                    d_obj, 
+                    next_hour, 
+                    "Recomendador", 
+                    top1, 
+                    top3, 
+                    top5, 
+                    probs
+                )
+            except Exception as e:
+                print(f"Error guardando predicción Recomendador: {e}")
         
         # Top 3 Destacados
         st.markdown("### 🏆 Top 3 Oportunidades")
@@ -1459,8 +1425,11 @@ def main():
                 "Patrón": item.patron_info
             })
             
+        df_recs = pd.DataFrame(df_data)
+        # print(f"DEBUG Recommender dtypes:\n{df_recs.dtypes}")
+
         st.dataframe(
-            df_data,
+            df_recs,
             use_container_width=True,
             column_config={
                 "Score Total": st.column_config.ProgressColumn(

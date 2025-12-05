@@ -67,24 +67,45 @@ class GeneradorReporte:
                 "sorteos": item.sorteos_sin_salir
             })
             
-        # 4. Patrones Activos
-        # Usamos historial completo plano
-        historial_plano = TableroAnalizer.get_ultimos_resultados(self.data, 1000)
-        estados = self.gestor_patrones.analizar_patrones(historial_plano)
+        # 4. Patrones Activos (HU-027)
+        # Usamos procesar_dia con los datos del último día disponible en el rango
         patrones_activos = []
-        for est in estados:
-            if est.progreso > 0 or est.es_completo:
-                patrones_activos.append({
-                    "nombre": est.patron.nombre,
-                    "secuencia": est.patron.str_secuencia,
-                    "progreso": est.progreso,
-                    "aciertos": est.aciertos,
-                    "total": len(est.patron.secuencia),
-                    "siguiente": est.siguiente,
-                    "es_completo": est.es_completo
-                })
-        # Ordenar: Completados primero, luego por progreso
-        patrones_activos.sort(key=lambda x: (x["es_completo"], x["progreso"]), reverse=True)
+        if self.data.dias:
+            dia_analisis = self.data.dias[-1]
+            resultados_dia = []
+            for hora in self.data.horas:
+                key = (dia_analisis, hora)
+                if key in self.data.tabla:
+                    val = self.data.tabla[key]
+                    # Extraer número
+                    num = None
+                    for k, v in ANIMALITOS.items():
+                        if val.startswith(f"{k} ") or val == k or v in val:
+                            num = k
+                            break
+                    if num:
+                        resultados_dia.append((hora, num))
+            
+            estados = self.gestor_patrones.procesar_dia(resultados_dia)
+            
+            for est in estados:
+                if est.aciertos_hoy > 0:
+                    faltantes = [n for n in est.patron.secuencia if n not in est.numeros_acertados]
+                    patrones_activos.append({
+                        "nombre": est.patron.descripcion_original, # Usamos la descripción original
+                        "progreso": est.progreso / 100.0, # Normalizar a 0-1 para consistencia visual si se usa progress bar
+                        "aciertos": est.aciertos_hoy,
+                        "total": len(est.patron.secuencia),
+                        "ultimo_acierto": est.ultimo_acierto,
+                        "hora_ultimo": est.hora_ultimo_acierto,
+                        "prioritario": est.patron.prioritario,
+                        "numeros_acertados": list(est.numeros_acertados),
+                        "secuencia": est.patron.secuencia,
+                        "siguiente": ", ".join(faltantes) if faltantes else "Completado"
+                    })
+        
+        # Ordenar: Prioritarios primero, luego por progreso
+        patrones_activos.sort(key=lambda x: (not x["prioritario"], -x["progreso"]))
         
         # 5. Sectores Activos
         # Analizar todo el rango
@@ -101,6 +122,18 @@ class GeneradorReporte:
         # Ordenar por cobertura
         sectores_info.sort(key=lambda x: x["cobertura"], reverse=True)
         
+        # Construir historial plano para Markov
+        historial_plano = []
+        for dia in self.data.dias:
+            for hora in self.data.horas:
+                key = (dia, hora)
+                if key in self.data.tabla:
+                    val = self.data.tabla[key]
+                    for k, v in ANIMALITOS.items():
+                        if val.startswith(f"{k} ") or val == k or v in val:
+                            historial_plano.append(k)
+                            break
+
         # 6. Markov
         markov_data = {}
         if historial_plano:

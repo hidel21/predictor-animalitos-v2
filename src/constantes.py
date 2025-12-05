@@ -52,15 +52,14 @@ COLORES = {
     "31": "black", "32": "red", "33": "black", "34": "red", "35": "black", "36": "red"
 }
 
-# Definición de Sectores (Ejemplo: Agrupación numérica simple para La Granjita)
-# Se pueden ajustar según estrategia específica
+# Definición de Sectores (Basado en imagen de usuario HU-026)
 SECTORES = {
-    "Sector A (0-6)": ["0", "00", "1", "2", "3", "4", "5", "6"],
-    "Sector B (7-12)": ["7", "8", "9", "10", "11", "12"],
-    "Sector C (13-18)": ["13", "14", "15", "16", "17", "18"],
-    "Sector D (19-24)": ["19", "20", "21", "22", "23", "24"],
-    "Sector E (25-30)": ["25", "26", "27", "28", "29", "30"],
-    "Sector F (31-36)": ["31", "32", "33", "34", "35", "36"]
+    "Sector A": ["35", "14", "2", "0", "28", "9", "26"],
+    "Sector B": ["30", "11", "7", "20", "32", "17"],
+    "Sector C": ["5", "22", "34", "15", "3", "24"],
+    "Sector D": ["36", "13", "1", "00", "27", "10", "25"],
+    "Sector E": ["29", "12", "8", "19", "31", "18"],
+    "Sector F": ["6", "21", "33", "16", "4", "23"]
 }
 
 DOCENAS = {

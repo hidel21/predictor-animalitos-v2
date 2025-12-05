@@ -88,26 +88,45 @@ class Recomendador:
         sector_coverage = {s.nombre: s.porcentaje_cobertura for s in stats_tablero["Sectores"]}
         
         # Patrones
-        # Obtener historial plano completo para patrones
-        historial_plano = TableroAnalizer.get_ultimos_resultados(self.data, 1000) # Traer suficientes
-        estados_patrones = self.gestor_patrones.analizar_patrones(historial_plano)
+        # Usamos la nueva lógica de patrones activos del día
+        # Necesitamos los resultados del día actual para ver qué patrones están activos
+        resultados_dia_actual = []
+        if self.data.dias:
+            dia_actual = self.data.dias[-1]
+            for hora in self.data.horas:
+                key = (dia_actual, hora)
+                if key in self.data.tabla:
+                    val = self.data.tabla[key]
+                    # Extraer número
+                    num = None
+                    for k, v in ANIMALITOS.items():
+                        if val.startswith(f"{k} ") or val == k or v in val:
+                            num = k
+                            break
+                    if num:
+                        resultados_dia_actual.append((hora, num))
+        
+        estados_patrones = self.gestor_patrones.procesar_dia(resultados_dia_actual)
         
         # Mapa de bonus por patrón: Numero -> Bonus
         patron_bonus = {}
         patron_info_map = {}
         
         for estado in estados_patrones:
-            if estado.siguiente:
-                # Si es el siguiente esperado, dar bonus proporcional al progreso
-                # Progreso 1.0 no debería pasar si hay siguiente (sería completo), pero por si acaso
-                bonus = estado.progreso  # 0.5, 0.66, etc.
+            # Si el patrón está activo, los números faltantes son candidatos
+            numeros_faltantes = [n for n in estado.patron.secuencia if n not in estado.numeros_acertados]
+            
+            if numeros_faltantes:
+                # Bonus proporcional al progreso
+                bonus = estado.progreso / 100.0 # 0.0 a 1.0
+                if estado.patron.prioritario:
+                    bonus *= 1.5 # Boost por prioridad
                 
-                # Acumular bonus si aparece en múltiples patrones? O tomar el máximo?
-                # Tomamos el máximo para no disparar el score
-                curr = patron_bonus.get(estado.siguiente, 0.0)
-                if bonus > curr:
-                    patron_bonus[estado.siguiente] = bonus
-                    patron_info_map[estado.siguiente] = f"Siguiente en {estado.patron.nombre} ({int(estado.progreso*100)}%)"
+                for num in numeros_faltantes:
+                    curr = patron_bonus.get(num, 0.0)
+                    if bonus > curr:
+                        patron_bonus[num] = bonus
+                        patron_info_map[num] = f"Falta en patrón {estado.patron.id} ({int(estado.progreso)}%)"
 
         # Calcular score para cada animalito (0-36)
         for num_str, nombre in ANIMALITOS.items():

@@ -104,7 +104,49 @@ Esto mostrará los animalitos que más frecuentemente han salido inmediatamente 
 
 ---
 
-## 6. Flujo interno
+## 6. Configuración de Base de Datos (Neon PostgreSQL)
+
+El sistema utiliza PostgreSQL para persistencia de datos. La configuración se maneja a través de **secrets**.
+
+### 6.1. Configuración Local
+
+Crea un archivo `.streamlit/secrets.toml` en la raíz del proyecto (este archivo está ignorado por git):
+
+```toml
+[postgres]
+user = "neondb_owner"
+password = "TU_PASSWORD_AQUI"
+host = "ep-tu-endpoint.us-east-1.aws.neon.tech"
+port = "5432"
+database = "neondb"
+sslmode = "require"
+```
+
+### 6.2. Configuración en Streamlit Cloud
+
+Al desplegar, debes configurar los mismos secretos en el panel de administración de Streamlit Cloud:
+1. Ve a **Settings** -> **Secrets**.
+2. Pega el contenido del bloque `[postgres]` tal cual se muestra arriba.
+
+---
+
+## 7. Deploy en Streamlit Cloud
+
+Para llevar la aplicación a producción:
+
+1. **Repositorio**: Asegúrate de que tu código esté en GitHub.
+2. **Secrets**: Verifica que `.streamlit/secrets.toml` **NO** esté en el repositorio (debe estar en `.gitignore`).
+3. **Streamlit Cloud**:
+   * Crea una nueva app conectada a tu repositorio.
+   * Selecciona el archivo principal: `src/app.py`.
+   * Antes de iniciar (o en Settings después), configura los **Secrets** como se indicó en el punto 6.2.
+4. **Verificación**:
+   * La aplicación se reiniciará automáticamente al guardar los secrets.
+   * Verifica en los logs que aparezca: `✅ [DB] Conexión a PostgreSQL establecida correctamente.`
+
+---
+
+## 8. Flujo interno
 
 1. **`HistorialClient.fetch_historial`**:
    * Construye la URL y descarga el HTML.
@@ -118,8 +160,7 @@ Esto mostrará los animalitos que más frecuentemente han salido inmediatamente 
 
 ---
 
-## 7. Futuras Implementaciones
+## 9. Futuras Implementaciones
 
 * **API REST (FastAPI)**: Para exponer los cálculos como servicio web.
-* **Dashboard Web**: Visualización interactiva de estadísticas.
 * **Automatización**: Scripts para actualización diaria de datos.

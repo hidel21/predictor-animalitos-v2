@@ -11,6 +11,7 @@ from src.atrasos import AnalizadorAtrasos
 from src.model import MarkovModel
 from src.radar import RadarAnalyzer
 from src.ruleta import ROULETTE_ORDER
+from src.patrones import GestorPatrones
 
 class FeatureEngineer:
     def __init__(self, historial: HistorialData):
@@ -18,6 +19,7 @@ class FeatureEngineer:
         self.atrasos_analyzer = AnalizadorAtrasos(historial)
         self.radar_analyzer = RadarAnalyzer(historial)
         self.markov_model = MarkovModel.from_historial(historial)
+        self.gestor_patrones = GestorPatrones()
         
         # Precalcular datos base
         self.df = self.radar_analyzer.df
@@ -56,6 +58,27 @@ class FeatureEngineer:
             if a.animal in name_to_num:
                 atrasos_num[name_to_num[a.animal]] = a.dias_sin_salir
         
+        # --- Preparar Patrones Activos del Día (HU-027) ---
+        resultados_dia = []
+        if self.historial.dias:
+            # Usamos el último día registrado como "hoy" para el contexto de features
+            dia_actual = self.historial.dias[-1]
+            for hora in self.historial.horas:
+                key = (dia_actual, hora)
+                if key in self.historial.tabla:
+                    val = self.historial.tabla[key]
+                    # Extraer número
+                    num = None
+                    for k, v in ANIMALITOS.items():
+                        if val.startswith(f"{k} ") or val == k or v in val:
+                            num = k
+                            break
+                    if num:
+                        resultados_dia.append((hora, num))
+        
+        # Actualizar estado del gestor
+        self.gestor_patrones.procesar_dia(resultados_dia)
+
         for num_str in ANIMALITOS.keys():
             f = {}
             f['numero'] = num_str
@@ -98,6 +121,10 @@ class FeatureEngineer:
             color = COLORES.get(num_str, "unknown")
             f['is_red'] = 1 if color == 'red' else 0
             f['is_black'] = 1 if color == 'black' else 0
+            
+            # --- 4. Features de Patrones (HU-027) ---
+            patron_feats = self.gestor_patrones.get_features_numero(num_str)
+            f.update(patron_feats)
             
             try:
                 n_int = int(num_str)

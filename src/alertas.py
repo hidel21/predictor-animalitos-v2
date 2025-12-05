@@ -64,40 +64,40 @@ class MotorAlertas:
 
     def _check_patrones(self) -> List[Alerta]:
         alertas = []
-        # Obtener historial plano para patrones
-        historial_plano = TableroAnalizer.get_ultimos_resultados(self.data, 1000)
-        estados = self.gestor_patrones.analizar_patrones(historial_plano)
+        # Usar lógica de patrones activos del día (HU-027)
+        resultados_dia = []
+        if self.data.dias:
+            dia_analisis = self.data.dias[-1]
+            for hora in self.data.horas:
+                key = (dia_analisis, hora)
+                if key in self.data.tabla:
+                    val = self.data.tabla[key]
+                    num = None
+                    for k, v in ANIMALITOS.items():
+                        if val.startswith(f"{k} ") or val == k or v in val:
+                            num = k
+                            break
+                    if num:
+                        resultados_dia.append((hora, num))
+        
+        estados = self.gestor_patrones.procesar_dia(resultados_dia)
         
         for estado in estados:
             p = estado.patron
-            if estado.es_completo:
-                # Alerta de éxito: Patrón completado recientemente
-                # Verificar si se completó JUSTO AHORA (último elemento del historial coincide con último del patrón)
-                # La lógica de analizar_patrones ya verifica coincidencia al final del historial.
-                alertas.append(Alerta(
-                    nivel=NivelAlerta.SUCCESS,
-                    titulo=f"Patrón Completado: {p.nombre}",
-                    mensaje=f"La secuencia {p.str_secuencia} se ha completado.",
-                    categoria="Patrón"
-                ))
-            elif estado.siguiente:
-                # Patrón en progreso
-                # Alertar si falta solo 1 (progreso alto) o si tiene varios aciertos
-                falta_uno = (estado.aciertos == len(p.secuencia) - 1)
-                if falta_uno:
-                    nombre_sig = ANIMALITOS.get(estado.siguiente, "?")
+            if estado.aciertos_hoy > 0:
+                # Si es prioritario y tiene progreso, avisar
+                if p.prioritario and estado.progreso > 0:
                     alertas.append(Alerta(
                         nivel=NivelAlerta.WARNING,
-                        titulo=f"Patrón a punto de completarse",
-                        mensaje=f"Falta el **{estado.siguiente} - {nombre_sig}** para completar {p.nombre} ({estado.aciertos}/{len(p.secuencia)}).",
+                        titulo=f"Patrón Prioritario Activo",
+                        mensaje=f"El patrón {p.descripcion_original} tiene {estado.aciertos_hoy} aciertos hoy ({int(estado.progreso)}%).",
                         categoria="Patrón"
                     ))
-                elif estado.progreso >= 0.5 and len(p.secuencia) > 3:
-                     # Progreso significativo en patrones largos
-                     alertas.append(Alerta(
+                elif estado.progreso >= 50:
+                    alertas.append(Alerta(
                         nivel=NivelAlerta.INFO,
-                        titulo=f"Patrón en progreso",
-                        mensaje=f"{p.nombre} al {int(estado.progreso*100)}%. Siguiente: {estado.siguiente}.",
+                        titulo=f"Patrón con Alta Actividad",
+                        mensaje=f"Patrón {p.id} al {int(estado.progreso)}% de aciertos hoy.",
                         categoria="Patrón"
                     ))
         return alertas
