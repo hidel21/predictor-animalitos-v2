@@ -10,6 +10,7 @@ class Patron:
     descripcion_original: str
     secuencia: List[str]
     prioritario: bool
+    origen: str = "Usuario" # "Usuario" o "IA"
     
     @property
     def str_secuencia(self) -> str:
@@ -90,6 +91,20 @@ class GestorPatrones:
                 patron = self._parsear_linea(linea, idx)
                 if patron:
                     self.patrones.append(patron)
+
+    def agregar_patron_ia(self, secuencia: List[str], descripcion: str) -> Patron:
+        """Agrega un patrón generado por IA a la lista en memoria."""
+        # Usar un ID alto para diferenciar visualmente si se necesita
+        idx = len(self.patrones) + 1000 
+        patron = Patron(
+            id=idx,
+            descripcion_original=descripcion,
+            secuencia=secuencia,
+            prioritario=True,
+            origen="IA"
+        )
+        self.patrones.append(patron)
+        return patron
 
     def procesar_dia(self, resultados_dia: List[Tuple[str, str]]) -> List[EstadoPatronDiario]:
         """

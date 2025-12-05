@@ -39,6 +39,8 @@ from src.repositories import (
     recalcular_metricas_por_fecha,
     obtener_metricas
 )
+from src.ui_ia_patrones import render_ia_patrones_tab
+from src.ui_ml import render_ml_tab
 
 # Configuración de la página
 st.set_page_config(
@@ -166,6 +168,190 @@ def render_tablero_ruleta(data):
         st.markdown("#### Columnas")
         for s in stats["Columnas"]:
             st.progress(s.porcentaje_cobertura, text=f"{s.nombre}: {s.numeros_salidos}/{s.total_numeros}")
+
+def render_heatmap_tab(data):
+    st.subheader("Mapa de Calor de Frecuencia")
+    
+    if data.total_sorteos == 0:
+        st.warning("No hay datos en el rango seleccionado.")
+        return
+
+    # Calcular frecuencias
+    freq = Counter(data.tabla.values())
+    max_freq = max(freq.values()) if freq else 0
+    
+    st.write(f"**Total Sorteos:** {data.total_sorteos} | **Máxima Frecuencia:** {max_freq}")
+
+    # Grid de animalitos
+    # CSS para las tarjetas
+    st.markdown("""
+    <style>
+    .animal-card {
+        border-radius: 10px;
+        padding: 10px;
+        text-align: center;
+        color: black;
+        font-weight: bold;
+        border: 1px solid #ddd;
+        margin-bottom: 10px;
+        transition: transform 0.2s;
+    }
+    .animal-card:hover {
+        transform: scale(1.05);
+        z-index: 1;
+        box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+    }
+    .animal-number {
+        font-size: 1.2em;
+        display: block;
+    }
+    .animal-name {
+        font-size: 0.9em;
+        display: block;
+    }
+    .animal-count {
+        font-size: 0.8em;
+        color: #333;
+        margin-top: 5px;
+        display: block;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+    # Crear columnas para el grid (ej. 6 columnas)
+    cols = st.columns(6)
+    
+    # Iterar sobre los 37 animalitos (0-36)
+    # Ordenar por número para que sea fácil de buscar
+    sorted_animals = sorted(ANIMALITOS.items(), key=lambda x: int(x[0]) if x[0].isdigit() else -1)
+    
+    for idx, (num, nombre) in enumerate(sorted_animals):
+        count = freq.get(nombre, 0)
+        color = get_color_intensity(count, max_freq)
+        
+        # Usar módulo para distribuir en columnas
+        col = cols[idx % 6]
+        
+        with col:
+            st.markdown(f"""
+            <div class="animal-card" style="background-color: {color};">
+                <span class="animal-number">{num}</span>
+                <span class="animal-name">{nombre}</span>
+                <span class="animal-count">{count} veces</span>
+            </div>
+            """, unsafe_allow_html=True)
+
+    # Leyenda
+    st.markdown("---")
+    st.caption("🔴 Rojo: Muy Frecuente | 🟠 Naranja: Frecuente | 🟡 Amarillo: Poco Frecuente | ⚪ Gris: Sin Salidas")
+
+def render_backtest_tab(data, start_date, end_date):
+    st.subheader("🧪 Validación Histórica (Backtesting)")
+    st.markdown("""
+    Evalúa qué tan bien habrían funcionado los modelos en el pasado.
+    El sistema simula predicciones día a día sin "ver el futuro".
+    """)
+    
+    if data.total_sorteos < 50:
+        st.warning("Se necesitan más datos históricos para un backtesting fiable (mínimo 50 sorteos).")
+        return
+
+    # Configuración
+    c1, c2 = st.columns(2)
+    with c1:
+        bt_start_date = st.date_input("Fecha Inicio Simulación", value=start_date + timedelta(days=7), min_value=start_date, max_value=end_date)
+    with c2:
+        bt_end_date = st.date_input("Fecha Fin Simulación", value=end_date, min_value=bt_start_date, max_value=end_date)
+        
+    st.markdown("##### Modelos a Evaluar")
+    c_m1, c_m2, c_m3 = st.columns(3)
+    use_markov = c_m1.checkbox("Márkov", value=True)
+    use_ml = c_m2.checkbox("IA (ML)", value=HAS_ML, disabled=not HAS_ML)
+    use_rec = c_m3.checkbox("Recomendador", value=False, help="Más lento, recalcula todo.")
+    
+    if st.button("🚀 Ejecutar Backtest", type="primary"):
+        with st.spinner("Ejecutando simulación histórica... Esto puede tardar unos segundos."):
+            gestor = st.session_state['gestor_patrones']
+            backtester = Backtester(data, gestor)
+            
+            models_cfg = {
+                "Markov": use_markov,
+                "ML": use_ml,
+                "Recomendador": use_rec
+            }
+            
+            bt_results = backtester.run(
+                bt_start_date.strftime("%Y-%m-%d"),
+                bt_end_date.strftime("%Y-%m-%d"),
+                models_cfg
+            )
+            
+            summary = bt_results["summary"]
+            raw = bt_results["raw"]
+            
+            if not summary:
+                st.warning("No se generaron resultados. Verifica el rango de fechas.")
+            else:
+                st.success(f"Simulación completada sobre {len(raw)} sorteos.")
+                
+                # Tabla Resumen
+                st.markdown("### 📊 Resultados Globales")
+                
+                summary_rows = []
+                for model, metrics in summary.items():
+                    summary_rows.append({
+                        "Modelo": model,
+                        "Sorteos": metrics["Total"],
+                        "Acierto Top 1": f"{metrics['Top1']} ({metrics['Top1_Pct']*100:.1f}%)",
+                        "Acierto Top 3": f"{metrics['Top3']} ({metrics['Top3_Pct']*100:.1f}%)",
+                        "Acierto Top 5": f"{metrics['Top5']} ({metrics['Top5_Pct']*100:.1f}%)",
+                    })
+                    
+                st.dataframe(summary_rows, use_container_width=True)
+                
+                # Gráficos
+                st.markdown("### 📈 Rendimiento Acumulado")
+                # Crear dataframe para gráfico
+                # Eje X: Fecha/Hora, Eje Y: Acierto acumulado (Top 3 por ejemplo)
+                
+                chart_data = []
+                cumulative = {m: 0 for m in summary.keys()}
+                count = 0
+                
+                for r in raw:
+                    count += 1
+                    row = {"Index": count, "Fecha": f"{r['fecha']} {r['hora']}"}
+                    for m in summary.keys():
+                        if m in r["aciertos"]:
+                            if r["aciertos"][m]["Top3"]: # Usamos Top 3 como métrica visual principal
+                                cumulative[m] += 1
+                            row[m] = cumulative[m] / count * 100 # Porcentaje acumulado
+                    chart_data.append(row)
+                    
+                if chart_data:
+                    st.line_chart(chart_data, x="Index", y=list(summary.keys()))
+                    st.caption("Eje Y: % de Acierto (Top 3) acumulado a lo largo del tiempo.")
+
+                # Exportar
+                st.markdown("### 📥 Exportar Resultados")
+                # Aplanar raw para CSV
+                flat_raw = []
+                for r in raw:
+                    base = {
+                        "Fecha": r["fecha"],
+                        "Hora": r["hora"],
+                        "Real": r["real"]
+                    }
+                    for m in summary.keys():
+                        if m in r["preds"]:
+                            base[f"{m}_Preds"] = ",".join(r["preds"][m])
+                            base[f"{m}_Top1"] = r["aciertos"][m]["Top1"]
+                            base[f"{m}_Top3"] = r["aciertos"][m]["Top3"]
+                            base[f"{m}_Top5"] = r["aciertos"][m]["Top5"]
+                    flat_raw.append(base)
+                    
+                csv_bt = Exporter.to_csv(flat_raw)
+                st.download_button("Descargar Detalle (CSV)", data=csv_bt, file_name="backtest_results.csv", mime="text/csv")
 
 def main():
     # Inicializar conexión a BD
@@ -347,6 +533,14 @@ def main():
     if 'gestor_patrones' not in st.session_state:
         st.session_state['gestor_patrones'] = GestorPatrones()
 
+    # Inicializar MLPredictor en sesión si no existe
+    if 'ml_predictor' not in st.session_state and HAS_ML and 'historial' in st.session_state:
+        pred_temp = MLPredictor(st.session_state['historial'])
+        if pred_temp.load_model():
+            st.session_state['ml_predictor'] = pred_temp
+        else:
+            st.session_state['ml_predictor'] = pred_temp
+
     # --- SECCIÓN DE ALERTAS ---
     # Se muestra si hay historial cargado
     if 'historial' in st.session_state:
@@ -399,7 +593,7 @@ def main():
     fecha_fin_str = st.session_state.get('fecha_fin', end_date.strftime("%Y-%m-%d"))
     
     # Pestañas principales
-    tab_resumen, tab0, tab1, tab2, tab3, tab_ml, tab_backtest, tab_tuning, tab_viz, tab4, tab_ruleta, tab_traza, tab_radar, tab5, tab6 = st.tabs([
+    tab_resumen, tab0, tab1, tab2, tab3, tab_ml, tab_backtest, tab_tuning, tab_viz, tab4, tab_ruleta, tab_traza, tab_radar, tab5, tab_ia_patrones, tab6 = st.tabs([
         "📋 Reporte Diario", 
         "📅 Resultados Hoy", 
         "🔥 Calendario de Intensidad", 
@@ -414,6 +608,7 @@ def main():
         "📊 Trazabilidad Diaria",
         "🕸️ Radar de Grupos",
         "🧩 Patrones", 
+        "🤖 IA y Patrones",
         "🚀 Recomendaciones"
     ])
 
@@ -644,79 +839,7 @@ def main():
             st.caption("Estos resultados se actualizan automáticamente si el Modo En Vivo está activo.")
 
     with tab1:
-        st.subheader("Mapa de Calor de Frecuencia")
-        
-        if data.total_sorteos == 0:
-            st.warning("No hay datos en el rango seleccionado.")
-        else:
-            # Calcular frecuencias
-            freq = Counter(data.tabla.values())
-            max_freq = max(freq.values()) if freq else 0
-            
-            st.write(f"**Total Sorteos:** {data.total_sorteos} | **Máxima Frecuencia:** {max_freq}")
-
-            # Grid de animalitos
-            # CSS para las tarjetas
-            st.markdown("""
-            <style>
-            .animal-card {
-                border-radius: 10px;
-                padding: 10px;
-                text-align: center;
-                color: black;
-                font-weight: bold;
-                border: 1px solid #ddd;
-                margin-bottom: 10px;
-                transition: transform 0.2s;
-            }
-            .animal-card:hover {
-                transform: scale(1.05);
-                z-index: 1;
-                box-shadow: 0 4px 8px rgba(0,0,0,0.1);
-            }
-            .animal-number {
-                font-size: 1.2em;
-                display: block;
-            }
-            .animal-name {
-                font-size: 0.9em;
-                display: block;
-            }
-            .animal-count {
-                font-size: 0.8em;
-                color: #333;
-                margin-top: 5px;
-                display: block;
-            }
-            </style>
-            """, unsafe_allow_html=True)
-
-            # Crear columnas para el grid (ej. 6 columnas)
-            cols = st.columns(6)
-            
-            # Iterar sobre los 37 animalitos (0-36)
-            # Ordenar por número para que sea fácil de buscar
-            sorted_animals = sorted(ANIMALITOS.items(), key=lambda x: int(x[0]) if x[0].isdigit() else -1)
-            
-            for idx, (num, nombre) in enumerate(sorted_animals):
-                count = freq.get(nombre, 0)
-                color = get_color_intensity(count, max_freq)
-                
-                # Usar módulo para distribuir en columnas
-                col = cols[idx % 6]
-                
-                with col:
-                    st.markdown(f"""
-                    <div class="animal-card" style="background-color: {color};">
-                        <span class="animal-number">{num}</span>
-                        <span class="animal-name">{nombre}</span>
-                        <span class="animal-count">{count} veces</span>
-                    </div>
-                    """, unsafe_allow_html=True)
-
-            # Leyenda
-            st.markdown("---")
-            st.caption("🔴 Rojo: Muy Frecuente | 🟠 Naranja: Frecuente | 🟡 Amarillo: Poco Frecuente | ⚪ Gris: Sin Salidas")
+        render_heatmap_tab(data)
 
     with tab2:
         st.subheader("❄️ Análisis de Atrasos (Top Fríos)")
@@ -820,295 +943,10 @@ def main():
                     st.bar_chart(chart_data, color="#4CAF50")
 
     with tab_ml:
-        st.subheader("🧠 Motor Predictivo de Machine Learning (IA)")
-        
-        if not HAS_ML:
-            st.error("⚠️ Las librerías de Machine Learning (scikit-learn, numpy) no están instaladas. Por favor instálalas para usar este módulo.")
-            st.code("pip install scikit-learn numpy", language="bash")
-        else:
-            st.markdown("""
-            Este módulo utiliza un modelo **Random Forest** entrenado con el historial para detectar patrones complejos no lineales.
-            Analiza variables como: día de la semana, hora, y secuencia de los últimos 3 resultados.
-            """)
-            
-            # Inicializar predictor en sesión si no existe
-            if 'ml_predictor' not in st.session_state:
-                # Intentar cargar modelo guardado
-                pred_temp = MLPredictor(data)
-                if pred_temp.load_model():
-                    st.session_state['ml_predictor'] = pred_temp
-                    st.toast("Modelo ML cargado desde disco.", icon="💾")
-                else:
-                    st.session_state['ml_predictor'] = pred_temp
-            
-            predictor = st.session_state['ml_predictor']
-            # Actualizar datos si cambiaron (ej. tiempo real)
-            predictor.data = data 
-            
-            col_train, col_status = st.columns([1, 3])
-            
-            with col_train:
-                if st.button("🧠 Entrenar Modelo", type="primary"):
-                    with st.spinner("Entrenando modelo de IA..."):
-                        predictor.train()
-                        predictor.save_model() # Guardar tras entrenar
-                        st.success("Modelo entrenado y guardado correctamente.")
-            
-            with col_status:
-                if predictor.is_trained:
-                    last_time = predictor.last_training_time
-                    if isinstance(last_time, str): # Si viene de JSON puede ser str
-                         try:
-                             last_time = datetime.fromisoformat(last_time)
-                         except:
-                             pass
-                    
-                    time_str = last_time.strftime('%Y-%m-%d %H:%M:%S') if isinstance(last_time, datetime) else str(last_time)
-                    st.success(f"✅ Modelo Activo (Entrenado: {time_str})")
-                else:
-                    st.warning("⚠️ Modelo no entrenado. Pulsa el botón para iniciar.")
-
-            st.divider()
-            
-            if predictor.is_trained:
-                # Preparar inputs para predicción
-                # Necesitamos los últimos 3 resultados y la fecha/hora "siguiente"
-                # Usamos la fecha actual y hora actual aproximada para simular "siguiente sorteo"
-                
-                # Obtener últimos 3 resultados reales
-                # Reutilizamos lógica de obtener lista plana cronológica
-                # (Idealmente esto debería ser una función utilitaria compartida)
-                todos_resultados_nombres = []
-                sorted_keys = sorted(data.tabla.keys(), key=lambda x: (x[0], datetime.strptime(x[1], "%I:%M %p") if "M" in x[1] else x[1]))
-                for k in sorted_keys:
-                    todos_resultados_nombres.append(data.tabla[k])
-                
-                if len(todos_resultados_nombres) < 3:
-                    st.warning("Insuficiente historial para predecir (mínimo 3 sorteos previos).")
-                else:
-                    last_3 = todos_resultados_nombres[-3:]
-                    
-                    # Simular siguiente fecha/hora
-                    now = datetime.now()
-                    next_date = now.strftime("%Y-%m-%d")
-                    # Hora: redondear a la siguiente hora en punto
-                    next_hour_int = (now.hour + 1) % 24
-                    # Formato 09:00 AM
-                    ampm = "AM" if next_hour_int < 12 else "PM"
-                    h_12 = next_hour_int if next_hour_int <= 12 else next_hour_int - 12
-                    if h_12 == 0: h_12 = 12
-                    next_hour = f"{h_12:02d}:00 {ampm}"
-                    
-                    st.markdown(f"**Predicción para:** {next_date} {next_hour}")
-                    st.caption(f"Basado en secuencia previa: {', '.join(last_3)}")
-                    
-                    # Usar el nuevo método predict() que usa FeatureEngineer internamente
-                    preds = predictor.predict(top_n=5)
-                    
-                    if not preds:
-                        st.warning("No se pudo generar predicción (posiblemente datos desconocidos en la secuencia).")
-                    else:
-                        # Registrar predicción (Logging)
-                        logger_pred = PredictionLogger()
-                        top_n_nums = [p.numero for p in preds[:5]]
-                        logger_pred.log_prediction(next_date, next_hour, top_n_nums)
-                        
-                        # Guardar en BD (HU-028)
-                        if engine:
-                            try:
-                                d_obj = datetime.strptime(next_date, "%Y-%m-%d").date()
-                                top1 = int(preds[0].numero)
-                                top3 = [int(p.numero) for p in preds[:3]]
-                                top5 = [int(p.numero) for p in preds[:5]]
-                                probs = {p.numero: p.probabilidad for p in preds[:5]}
-                                
-                                guardar_prediccion(
-                                    engine, 
-                                    d_obj, 
-                                    next_hour, 
-                                    "ML_RandomForest", 
-                                    top1, 
-                                    top3, 
-                                    top5, 
-                                    probs
-                                )
-                            except Exception as e:
-                                print(f"Error guardando predicción ML: {e}")
-                        
-                        # Mostrar Top 5
-                        c1, c2 = st.columns([2, 1])
-                        
-                        with c1:
-                            st.markdown("#### 🏆 Top 5 Predicciones IA")
-                            
-                            # Crear DataFrame para mostrar tabla bonita
-                            data_preds = []
-                            for p in preds[:5]: # Mostrar Top 5
-                                data_preds.append({
-                                    "Ranking": int(p.ranking),
-                                    "Número": str(p.numero), # Asegurar string para evitar ArrowTypeError
-                                    "Animal": str(p.nombre),
-                                    "Probabilidad": float(p.probabilidad)
-                                })
-                            
-                            df_preds = pd.DataFrame(data_preds)
-                            # Forzar tipos explícitamente para evitar ArrowTypeError
-                            if not df_preds.empty:
-                                df_preds["Ranking"] = df_preds["Ranking"].astype(str) # Changed to str to debug ArrowTypeError
-                                df_preds["Número"] = df_preds["Número"].astype(str)
-                                df_preds["Animal"] = df_preds["Animal"].astype(str)
-                                df_preds["Probabilidad"] = df_preds["Probabilidad"].astype(float)
-                            
-                            # st.dataframe(
-                            #     df_preds,
-                            #     column_config={
-                            #         "Ranking": st.column_config.TextColumn( # Changed to TextColumn
-                            #             "Rank",
-                            #             width="small"
-                            #         ),
-                            #         "Número": st.column_config.TextColumn(
-                            #             "Nro",
-                            #             width="small"
-                            #         ),
-                            #         "Animal": st.column_config.TextColumn(
-                            #             "Animalito",
-                            #             width="medium"
-                            #         ),
-                            #         "Probabilidad": st.column_config.ProgressColumn(
-                            #             "Confianza",
-                            #             format="%.1f%%",
-                            #             min_value=0,
-                            #             max_value=1, # Probabilidad viene en 0-1
-                            #             width="medium"
-                            #         ),
-                            #     },
-                            #     hide_index=True,
-                            #     use_container_width=True
-                            # )
-                            st.write("DEBUG: Dataframe ML disabled")
-                                
-                        with c2:
-                            st.markdown("#### 📊 Importancia de Variables")
-                            feats = predictor.get_feature_importance()
-                            if feats:
-                                feat_dict = {f.feature: f.importance for f in feats}
-                                st.bar_chart(feat_dict)
-                            else:
-                                st.caption("No disponible.")
-                            
-                            # Mostrar estado del log
-                            st.markdown("---")
-                            st.caption("📝 Predicción registrada en log para aprendizaje continuo.")
-                            if st.button("Ver Log Reciente"):
-                                logs = logger_pred.get_recent_logs(5)
-                                st.dataframe(logs)
+        render_ml_tab(data, engine)
 
     with tab_backtest:
-        st.subheader("🧪 Validación Histórica (Backtesting)")
-        st.markdown("""
-        Evalúa qué tan bien habrían funcionado los modelos en el pasado.
-        El sistema simula predicciones día a día sin "ver el futuro".
-        """)
-        
-        if data.total_sorteos < 50:
-            st.warning("Se necesitan más datos históricos para un backtesting fiable (mínimo 50 sorteos).")
-        else:
-            # Configuración
-            c1, c2 = st.columns(2)
-            with c1:
-                bt_start_date = st.date_input("Fecha Inicio Simulación", value=start_date + timedelta(days=7), min_value=start_date, max_value=end_date)
-            with c2:
-                bt_end_date = st.date_input("Fecha Fin Simulación", value=end_date, min_value=bt_start_date, max_value=end_date)
-                
-            st.markdown("##### Modelos a Evaluar")
-            c_m1, c_m2, c_m3 = st.columns(3)
-            use_markov = c_m1.checkbox("Márkov", value=True)
-            use_ml = c_m2.checkbox("IA (ML)", value=HAS_ML, disabled=not HAS_ML)
-            use_rec = c_m3.checkbox("Recomendador", value=False, help="Más lento, recalcula todo.")
-            
-            if st.button("🚀 Ejecutar Backtest", type="primary"):
-                with st.spinner("Ejecutando simulación histórica... Esto puede tardar unos segundos."):
-                    gestor = st.session_state['gestor_patrones']
-                    backtester = Backtester(data, gestor)
-                    
-                    models_cfg = {
-                        "Markov": use_markov,
-                        "ML": use_ml,
-                        "Recomendador": use_rec
-                    }
-                    
-                    bt_results = backtester.run(
-                        bt_start_date.strftime("%Y-%m-%d"),
-                        bt_end_date.strftime("%Y-%m-%d"),
-                        models_cfg
-                    )
-                    
-                    summary = bt_results["summary"]
-                    raw = bt_results["raw"]
-                    
-                    if not summary:
-                        st.warning("No se generaron resultados. Verifica el rango de fechas.")
-                    else:
-                        st.success(f"Simulación completada sobre {len(raw)} sorteos.")
-                        
-                        # Tabla Resumen
-                        st.markdown("### 📊 Resultados Globales")
-                        
-                        summary_rows = []
-                        for model, metrics in summary.items():
-                            summary_rows.append({
-                                "Modelo": model,
-                                "Sorteos": metrics["Total"],
-                                "Acierto Top 1": f"{metrics['Top1']} ({metrics['Top1_Pct']*100:.1f}%)",
-                                "Acierto Top 3": f"{metrics['Top3']} ({metrics['Top3_Pct']*100:.1f}%)",
-                                "Acierto Top 5": f"{metrics['Top5']} ({metrics['Top5_Pct']*100:.1f}%)",
-                            })
-                            
-                        st.dataframe(summary_rows, use_container_width=True)
-                        
-                        # Gráficos
-                        st.markdown("### 📈 Rendimiento Acumulado")
-                        # Crear dataframe para gráfico
-                        # Eje X: Fecha/Hora, Eje Y: Acierto acumulado (Top 3 por ejemplo)
-                        
-                        chart_data = []
-                        cumulative = {m: 0 for m in summary.keys()}
-                        count = 0
-                        
-                        for r in raw:
-                            count += 1
-                            row = {"Index": count, "Fecha": f"{r['fecha']} {r['hora']}"}
-                            for m in summary.keys():
-                                if m in r["aciertos"]:
-                                    if r["aciertos"][m]["Top3"]: # Usamos Top 3 como métrica visual principal
-                                        cumulative[m] += 1
-                                row[m] = cumulative[m] / count * 100 # Porcentaje acumulado
-                            chart_data.append(row)
-                            
-                        if chart_data:
-                            st.line_chart(chart_data, x="Index", y=list(summary.keys()))
-                            st.caption("Eje Y: % de Acierto (Top 3) acumulado a lo largo del tiempo.")
-
-                        # Exportar
-                        st.markdown("### 📥 Exportar Resultados")
-                        # Aplanar raw para CSV
-                        flat_raw = []
-                        for r in raw:
-                            base = {
-                                "Fecha": r["fecha"],
-                                "Hora": r["hora"],
-                                "Real": r["real"]
-                            }
-                            for m in summary.keys():
-                                if m in r["preds"]:
-                                    base[f"{m}_Preds"] = ",".join(r["preds"][m])
-                                    base[f"{m}_Top1"] = r["aciertos"][m]["Top1"]
-                                    base[f"{m}_Top3"] = r["aciertos"][m]["Top3"]
-                                    base[f"{m}_Top5"] = r["aciertos"][m]["Top5"]
-                            flat_raw.append(base)
-                            
-                        csv_bt = Exporter.to_csv(flat_raw)
-                        st.download_button("Descargar Detalle (CSV)", data=csv_bt, file_name="backtest_results.csv", mime="text/csv")
+        render_backtest_tab(data, start_date, end_date)
 
     with tab_tuning:
         st.subheader("⚙️ Optimización Automática de Modelos (Hyperparameter Tuning)")
@@ -1281,12 +1119,22 @@ def main():
                         "Último": f"{e.ultimo_acierto} ({e.hora_ultimo_acierto})"
                     })
                 
-                # st.dataframe(
-                #     pd.DataFrame(table_data),
-                #     use_container_width=True,
-                #     hide_index=True
-                # )
-                st.write("DEBUG: Dataframe Patterns disabled")
+                df_patterns = pd.DataFrame(table_data)
+                if not df_patterns.empty:
+                    # Ensure types to avoid ArrowTypeError
+                    df_patterns["Prioridad"] = df_patterns["Prioridad"].astype(str)
+                    df_patterns["Definición"] = df_patterns["Definición"].astype(str)
+                    df_patterns["Secuencia"] = df_patterns["Secuencia"].astype(str)
+                    df_patterns["Aciertos"] = df_patterns["Aciertos"].astype(int)
+                    df_patterns["Progreso"] = df_patterns["Progreso"].astype(str)
+                    df_patterns["Último"] = df_patterns["Último"].astype(str)
+
+                st.dataframe(
+                    df_patterns,
+                    use_container_width=True,
+                    hide_index=True
+                )
+                # st.write("DEBUG: Dataframe Patterns disabled")
                 
                 # Detalles visuales (Tarjetas para los prioritarios)
                 st.markdown("### 🔥 Patrones Prioritarios Activos")
@@ -1305,6 +1153,11 @@ def main():
                         </div>
                         """, unsafe_allow_html=True)
     
+    with tab_ia_patrones:
+        gestor = st.session_state['gestor_patrones']
+        ml_predictor = st.session_state.get('ml_predictor')
+        render_ia_patrones_tab(data, gestor, ml_predictor)
+
     with tab6:
         st.subheader("🚀 Motor de Recomendación Avanzada")
         st.caption("Ranking inteligente basado en múltiples factores ponderados.")
@@ -1417,16 +1270,24 @@ def main():
         for item in scores:
             df_data.append({
                 "Número": f"{item.numero} - {item.nombre}",
-                "Score Total": f"{item.score_total*100:.1f}",
+                "Score Total": float(item.score_total * 100), # Float para ProgressColumn
                 "Frecuencia": f"{item.score_frecuencia*100:.0f}% ({item.frecuencia_real})",
                 "Atraso": f"{item.score_atraso*100:.0f}% ({item.dias_sin_salir}d)",
                 "Márkov": f"{item.prob_markov*100:.1f}%",
-                "Sector": item.sector_info,
-                "Patrón": item.patron_info
+                "Sector": str(item.sector_info),
+                "Patrón": str(item.patron_info)
             })
             
         df_recs = pd.DataFrame(df_data)
-        # print(f"DEBUG Recommender dtypes:\n{df_recs.dtypes}")
+        
+        if not df_recs.empty:
+            df_recs["Número"] = df_recs["Número"].astype(str)
+            df_recs["Score Total"] = df_recs["Score Total"].astype(float)
+            df_recs["Frecuencia"] = df_recs["Frecuencia"].astype(str)
+            df_recs["Atraso"] = df_recs["Atraso"].astype(str)
+            df_recs["Márkov"] = df_recs["Márkov"].astype(str)
+            df_recs["Sector"] = df_recs["Sector"].astype(str)
+            df_recs["Patrón"] = df_recs["Patrón"].astype(str)
 
         st.dataframe(
             df_recs,
@@ -1434,7 +1295,7 @@ def main():
             column_config={
                 "Score Total": st.column_config.ProgressColumn(
                     "Score",
-                    format="%s",
+                    format="%.1f",
                     min_value=0,
                     max_value=100,
                 ),
