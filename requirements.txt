@@ -11,3 +11,4 @@ pytz
 plotly
 psycopg2-binary
 sqlalchemy
+openai
