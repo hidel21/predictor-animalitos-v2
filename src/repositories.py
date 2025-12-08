@@ -126,7 +126,7 @@ def guardar_prediccion(
                 print(f"ℹ️ Sorteo placeholder creado para {fecha} {hora} (ID: {sorteo_id})")
             except Exception as e:
                 # Si falla (probablemente por UniqueViolation si otro proceso lo creó), intentamos buscar de nuevo
-                print(f"⚠️ Error creando sorteo placeholder (posible concurrencia): {e}")
+                # print(f"⚠️ Error creando sorteo placeholder (posible concurrencia): {e}")
                 result_retry = conn.execute(query_sorteo, {"fecha": fecha, "hora": hora}).fetchone()
                 if result_retry:
                     sorteo_id = result_retry[0]
@@ -171,6 +171,30 @@ def actualizar_aciertos_predicciones(engine: Engine):
     
     with engine.begin() as conn:
         conn.execute(query)
+
+def obtener_ultimas_predicciones(engine: Engine, limit: int = 10) -> pd.DataFrame:
+    """
+    Obtiene las últimas predicciones guardadas en la base de datos.
+    """
+    query = text("""
+        SELECT 
+            p.id,
+            s.fecha,
+            s.hora,
+            p.modelo,
+            p.top1,
+            p.top3,
+            p.acierto_top1,
+            p.acierto_top3,
+            s.numero_real
+        FROM predicciones p
+        JOIN sorteos s ON p.sorteo_id = s.id
+        ORDER BY p.id DESC
+        LIMIT :limit
+    """)
+    
+    with engine.connect() as conn:
+        return pd.read_sql(query, conn, params={"limit": limit})
 
 def recalcular_metricas_por_fecha(engine: Engine, modelo: str):
     """

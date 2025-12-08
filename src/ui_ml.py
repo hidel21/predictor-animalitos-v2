@@ -3,7 +3,7 @@ import pandas as pd
 from datetime import datetime, timedelta
 from src.ml_model import MLPredictor, HAS_ML
 from src.prediction_logger import PredictionLogger
-from src.repositories import guardar_prediccion
+from src.repositories import guardar_prediccion, obtener_ultimas_predicciones
 
 def render_ml_tab(data, engine):
     st.subheader("🧠 Motor Predictivo de Machine Learning (IA)")
@@ -188,3 +188,40 @@ def render_ml_tab(data, engine):
                         if st.button("Ver Log Reciente"):
                             logs = logger_pred.get_recent_logs(5)
                             st.dataframe(logs)
+
+        # --- Sección de Historial de Predicciones (Persistencia) ---
+        st.divider()
+        st.subheader("📜 Historial de Predicciones Guardadas")
+        
+        if engine:
+            try:
+                df_hist = obtener_ultimas_predicciones(engine, limit=10)
+                if not df_hist.empty:
+                    # Formatear para visualización
+                    df_display = df_hist.copy()
+                    
+                    # Mapear booleanos a iconos
+                    def map_bool(val):
+                        if val is True: return "✅"
+                        if val is False: return "❌"
+                        return "⏳" # None
+                    
+                    df_display['acierto_top1'] = df_display['acierto_top1'].apply(map_bool)
+                    df_display['acierto_top3'] = df_display['acierto_top3'].apply(map_bool)
+                    
+                    # Formatear resultado real
+                    df_display['numero_real'] = df_display['numero_real'].apply(lambda x: str(x) if x != -1 else "Pendiente")
+                    
+                    st.dataframe(
+                        df_display[['fecha', 'hora', 'modelo', 'top1', 'top3', 'numero_real', 'acierto_top1', 'acierto_top3']],
+                        use_container_width=True,
+                        column_config={
+                            "top3": st.column_config.ListColumn("Top 3"),
+                            "acierto_top1": st.column_config.TextColumn("Hit Top 1"),
+                            "acierto_top3": st.column_config.TextColumn("Hit Top 3"),
+                        }
+                    )
+                else:
+                    st.info("No hay predicciones guardadas aún.")
+            except Exception as e:
+                st.error(f"Error cargando historial: {e}")

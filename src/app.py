@@ -41,6 +41,8 @@ from src.repositories import (
 )
 from src.ui_ia_patrones import render_ia_patrones_tab
 from src.ui_ml import render_ml_tab
+from src.ui_tripletas import render_tripletas_tab
+from src.ui_ia_analista import render_ia_analista_tab
 
 # Configuración de la página
 st.set_page_config(
@@ -593,7 +595,7 @@ def main():
     fecha_fin_str = st.session_state.get('fecha_fin', end_date.strftime("%Y-%m-%d"))
     
     # Pestañas principales
-    tab_resumen, tab0, tab1, tab2, tab3, tab_ml, tab_backtest, tab_tuning, tab_viz, tab4, tab_ruleta, tab_traza, tab_radar, tab5, tab_ia_patrones, tab6 = st.tabs([
+    tab_resumen, tab0, tab1, tab2, tab3, tab_ml, tab_backtest, tab_tuning, tab_viz, tab4, tab_ruleta, tab_traza, tab_radar, tab5, tab_ia_patrones, tab_tripletas, tab_ia_analista, tab6 = st.tabs([
         "📋 Reporte Diario", 
         "📅 Resultados Hoy", 
         "🔥 Calendario de Intensidad", 
@@ -609,6 +611,8 @@ def main():
         "🕸️ Radar de Grupos",
         "🧩 Patrones", 
         "🤖 IA y Patrones",
+        "🎲 Tripletas",
+        "🤖 IA Analista",
         "🚀 Recomendaciones"
     ])
 
@@ -1157,6 +1161,15 @@ def main():
         gestor = st.session_state['gestor_patrones']
         ml_predictor = st.session_state.get('ml_predictor')
         render_ia_patrones_tab(data, gestor, ml_predictor)
+
+    with tab_tripletas:
+        engine = get_engine()
+        gestor = st.session_state['gestor_patrones']
+        recomendador = Recomendador(data, gestor)
+        render_tripletas_tab(engine, recomendador)
+
+    with tab_ia_analista:
+        render_ia_analista_tab(engine)
 
     with tab6:
         st.subheader("🚀 Motor de Recomendación Avanzada")
