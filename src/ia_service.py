@@ -116,6 +116,9 @@ class IAService:
         
         response_text = self.client.get_analysis(system_prompt, context)
         
+        if not response_text:
+            return {"error": "Falló la comunicación con OpenAI. Revisa los logs o la alerta superior para más detalles."}
+
         # Extraer JSON del final
         recomendaciones_json = []
         try:

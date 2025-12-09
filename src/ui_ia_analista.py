@@ -50,6 +50,8 @@ def render_ia_analista_tab(engine):
                     if recs:
                         st.subheader("📌 Recomendaciones Extraídas")
                         df_recs = pd.DataFrame(recs)
+                        # Convertir a string para evitar errores de Arrow con tipos mixtos
+                        df_recs = df_recs.astype(str)
                         st.dataframe(df_recs, use_container_width=True)
 
     with tab_hist:
