@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 from src.ml_model import MLPredictor, HAS_ML
 from src.prediction_logger import PredictionLogger
 from src.repositories import guardar_prediccion, obtener_ultimas_predicciones
+from src.predictive_engine import PredictiveEngine
 
 def render_ml_tab(data, engine):
     st.subheader("🧠 Motor Predictivo de Machine Learning (IA)")
@@ -225,3 +226,34 @@ def render_ml_tab(data, engine):
                     st.info("No hay predicciones guardadas aún.")
             except Exception as e:
                 st.error(f"Error cargando historial: {e}")
+
+    # --- Sección HU-037 y HU-038 ---
+    st.divider()
+    st.subheader("🛠️ Gestión de Datos Avanzados (V2)")
+    
+    col_adv1, col_adv2 = st.columns(2)
+    
+    with col_adv1:
+        st.markdown("**HU-037: Dataset de Entrenamiento**")
+        st.info("Genera un dataset histórico con features (Atraso, Frecuencia, Markov) y target (Ganador) para análisis de ROI.")
+        if st.button("Generar Dataset (Últimos 90 días)"):
+            with st.spinner("Generando dataset... esto puede tardar unos segundos."):
+                try:
+                    pe = PredictiveEngine(data)
+                    pe.generate_training_dataset(limit_days=90)
+                    st.success("Dataset generado y guardado en DB (sexteto_training_dataset).")
+                except Exception as e:
+                    st.error(f"Error generando dataset: {e}")
+
+    with col_adv2:
+        st.markdown("**HU-038: Correlaciones y Markov**")
+        st.info("Calcula y guarda matrices de correlación y transiciones de Markov en la base de datos.")
+        if st.button("Calcular y Guardar Métricas"):
+            with st.spinner("Calculando métricas..."):
+                try:
+                    pe = PredictiveEngine(data)
+                    pe.save_advanced_metrics()
+                    st.success("Métricas guardadas en DB (correlacion_numeros, markov_transiciones).")
+                except Exception as e:
+                    st.error(f"Error guardando métricas: {e}")
+

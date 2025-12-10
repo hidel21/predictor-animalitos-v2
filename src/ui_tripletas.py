@@ -8,6 +8,8 @@ import time
 from src.tripletas import GestorTripletas
 from src.constantes import ANIMALITOS
 from src.recomendador import Recomendador
+from src.predictive_engine import PredictiveEngine
+import altair as alt
 
 def render_tripletas_tab(engine, recomendador: Recomendador):
     st.header("🧩 Gestión de Tripletas - La Granjita")
@@ -26,7 +28,7 @@ def render_tripletas_tab(engine, recomendador: Recomendador):
         with c3:
             st.info("El seguimiento durará 12 sorteos consecutivos desde la hora seleccionada.")
 
-    tab_gen, tab_manual, tab_seguimiento = st.tabs(["🎲 Generar (Sexteto)", "📝 Registro Manual", "📊 Seguimiento Activo"])
+    tab_gen, tab_manual, tab_seguimiento, tab_predictivo = st.tabs(["🎲 Generar (Sexteto)", "📝 Registro Manual", "📊 Seguimiento Activo", "🧠 Análisis Predictivo"])
 
     # --- TAB 1: Generación Automática ---
     with tab_gen:
@@ -34,9 +36,10 @@ def render_tripletas_tab(engine, recomendador: Recomendador):
         
         # Layout Vertical para evitar superposiciones
         st.markdown("#### 1. Selección de Números")
-        modo_seleccion = st.radio("Método de Selección", ["Manual", "Sugerido por IA"], horizontal=True)
+        modo_seleccion = st.radio("Método de Selección", ["Manual", "IA Simple", "IA + Motor Predictivo (Recomendado)"], horizontal=True, index=2)
         
         numeros_seleccionados = []
+        origen_seleccion = "MANUAL"
         
         if modo_seleccion == "Manual":
             # Multiselect limitado a 6
@@ -44,8 +47,10 @@ def render_tripletas_tab(engine, recomendador: Recomendador):
             sel = st.multiselect("Elige 6 números", opts, max_selections=6)
             if len(sel) == 6:
                 numeros_seleccionados = [int(s.split(" - ")[0]) for s in sel]
-        else:
-            if st.button("🤖 Obtener Sexteto IA", use_container_width=True):
+                origen_seleccion = "MANUAL"
+
+        elif modo_seleccion == "IA Simple":
+            if st.button("🤖 Obtener Sexteto IA Simple", use_container_width=True):
                 scores = recomendador.calcular_scores()
                 # Top 6
                 top_6 = sorted(scores, key=lambda x: x.score_total, reverse=True)[:6]
@@ -53,26 +58,70 @@ def render_tripletas_tab(engine, recomendador: Recomendador):
                 
                 # Guardar en session state para persistencia simple
                 st.session_state['last_ia_sexteto'] = numeros_seleccionados
+                st.session_state['last_ia_type'] = "IA_SIMPLE"
             
             # Recuperar si existe
-            if 'last_ia_sexteto' in st.session_state and modo_seleccion == "Sugerido por IA":
+            if 'last_ia_sexteto' in st.session_state and st.session_state.get('last_ia_type') == "IA_SIMPLE":
                 numeros_seleccionados = st.session_state['last_ia_sexteto']
+                origen_seleccion = "IA_SIMPLE"
                 
                 with st.container():
                     st.success(f"IA Sugiere: {', '.join([str(n) for n in numeros_seleccionados])}")
-                    
-                    # Mostrar detalles en 3 columnas x 2 filas para evitar superposición
+                    # Mostrar detalles (reutilizar lógica visual)
                     row1 = st.columns(3)
                     row2 = st.columns(3)
-                    
                     for idx, n in enumerate(numeros_seleccionados):
                         nombre = ANIMALITOS.get(str(n), 'Desconocido')
                         texto = f"**{n}** - {nombre}"
+                        if idx < 3: row1[idx].info(texto)
+                        else: row2[idx-3].info(texto)
+
+        elif modo_seleccion == "IA + Motor Predictivo (Recomendado)":
+            pred_engine = PredictiveEngine(recomendador.data)
+            candidates = pred_engine.generate_candidate_sextets()
+            
+            st.info("Selecciona una de las estrategias sugeridas por el Motor Predictivo:")
+            
+            cols = st.columns(3)
+            selected_candidate = None
+            
+            # Usar session state para recordar cuál seleccionó el usuario
+            if 'selected_candidate_idx' not in st.session_state:
+                st.session_state['selected_candidate_idx'] = None
+
+            for idx, cand in enumerate(candidates):
+                with cols[idx]:
+                    with st.container(border=True):
+                        st.markdown(f"### {cand['tipo']}")
+                        st.caption(cand['desc'])
+                        st.metric("Score Sexteto", cand['score'])
+                        st.write(f"**Números:** {cand['numeros']}")
                         
-                        if idx < 3:
-                            row1[idx].info(texto)
-                        else:
-                            row2[idx-3].info(texto)
+                        if st.button(f"Usar {cand['tipo']}", key=f"btn_cand_{idx}", use_container_width=True):
+                            st.session_state['selected_candidate_idx'] = idx
+            
+            # Si hay uno seleccionado
+            if st.session_state['selected_candidate_idx'] is not None:
+                idx = st.session_state['selected_candidate_idx']
+                cand = candidates[idx]
+                numeros_seleccionados = cand['numeros']
+                origen_seleccion = f"IA_PREDICTIVO_{cand['tipo']}"
+                
+                st.success(f"Estrategia Seleccionada: **{cand['tipo']}**")
+                
+                # Opción de ajuste fino
+                with st.expander("🛠️ Ajuste Fino (Opcional)"):
+                    opts = [f"{k} - {v}" for k, v in ANIMALITOS.items()]
+                    default_opts = [f"{n} - {ANIMALITOS.get(str(n), '')}" for n in numeros_seleccionados]
+                    
+                    sel_ajuste = st.multiselect("Modificar números seleccionados", opts, default=default_opts, max_selections=6)
+                    
+                    if len(sel_ajuste) == 6:
+                        nuevos_nums = [int(s.split(" - ")[0]) for s in sel_ajuste]
+                        if set(nuevos_nums) != set(numeros_seleccionados):
+                            numeros_seleccionados = nuevos_nums
+                            origen_seleccion = f"IA_PREDICTIVO_{cand['tipo']}_AJUSTADO"
+                            st.warning("Has modificado el sexteto original sugerido.")
 
         st.divider()
         
@@ -81,6 +130,19 @@ def render_tripletas_tab(engine, recomendador: Recomendador):
         if len(numeros_seleccionados) == 6:
             permutas = gestor.generar_permutas(numeros_seleccionados)
             
+            # --- Motor Predictivo ---
+            pred_engine = PredictiveEngine(recomendador.data)
+            scored_data = []
+            for p in permutas:
+                score, feats = pred_engine.score_triplet([str(x) for x in p])
+                scored_data.append({
+                    "N1": p[0], "N2": p[1], "N3": p[2],
+                    "Score": score,
+                    "Probabilidad": "Alta" if score >= 70 else "Media" if score >= 40 else "Baja"
+                })
+            
+            df_preview = pd.DataFrame(scored_data).sort_values("Score", ascending=False)
+            
             with st.container(border=True):
                 st.info(f"Se generarán **{len(permutas)} tripletas** combinando los 6 números.")
                 
@@ -88,22 +150,49 @@ def render_tripletas_tab(engine, recomendador: Recomendador):
                 c_cost1.metric("Total Tripletas", len(permutas))
                 c_cost2.metric("Costo Total", f"{len(permutas) * monto:,.2f} Bs")
                 
-                df_preview = pd.DataFrame(permutas, columns=["N1", "N2", "N3"])
-                st.dataframe(df_preview, height=150, use_container_width=True)
+                # Colorear según probabilidad
+                def color_prob(val):
+                    color = 'red'
+                    if val == 'Alta': color = 'green'
+                    elif val == 'Media': color = 'orange'
+                    return f'color: {color}'
+
+                st.dataframe(
+                    df_preview.style.map(color_prob, subset=['Probabilidad']), 
+                    height=250, 
+                    use_container_width=True
+                )
                 
                 st.divider()
                 if st.button("✅ Confirmar y Crear Sesión", type="primary", use_container_width=True):
                     sesion_id = gestor.crear_sesion(hora_inicio, monto, numeros_seleccionados)
+                    # Guardar tripletas
                     gestor.agregar_tripletas(sesion_id, [list(p) for p in permutas], es_generada=True)
+                    
+                    # Actualizar origen del sexteto en BD (HU-036)
+                    try:
+                        with engine.begin() as conn:
+                            from sqlalchemy import text
+                            conn.execute(text("UPDATE tripleta_sesiones SET origen_sexteto = :origen WHERE id = :id"), 
+                                         {"origen": origen_seleccion, "id": sesion_id})
+                    except Exception as e:
+                        print(f"Error actualizando origen sexteto: {e}")
+
                     st.success(f"Sesión #{sesion_id} creada exitosamente!")
                     # Limpiar estado
                     if 'last_ia_sexteto' in st.session_state:
                         del st.session_state['last_ia_sexteto']
+                    if 'selected_candidate_idx' in st.session_state:
+                        del st.session_state['selected_candidate_idx']
+                        
                     time.sleep(1)
                     st.rerun()
         else:
-            st.warning("Debes tener exactamente 6 números seleccionados para ver la vista previa.")
-            st.caption("Selecciona 'Manual' o 'Sugerido por IA' arriba.")
+            if modo_seleccion == "IA + Motor Predictivo (Recomendado)" and not numeros_seleccionados:
+                st.info("👆 Selecciona una estrategia arriba para continuar.")
+            else:
+                st.warning("Debes tener exactamente 6 números seleccionados para ver la vista previa.")
+                st.caption("Selecciona 'Manual' o 'Sugerido por IA' arriba.")
 
     # --- TAB 2: Registro Manual ---
     with tab_manual:
@@ -255,4 +344,53 @@ def render_tripletas_tab(engine, recomendador: Recomendador):
             st.dataframe(hist_display[['id', 'fecha_inicio', 'hora_inicio', 'estado', 'roi', 'tasa_exito', 'ganancia']], use_container_width=True)
         else:
             st.info("No hay historial disponible.")
+
+    # --- TAB 4: Análisis Predictivo ---
+    with tab_predictivo:
+        st.subheader("🧠 Dashboard Analítico Predictivo")
+        
+        pred_engine = PredictiveEngine(recomendador.data)
+        df_feats = pred_engine.get_dashboard_data()
+        
+        if df_feats.empty:
+            st.warning("No hay datos suficientes para el análisis.")
+        else:
+            # Top Metrics
+            c1, c2, c3, c4 = st.columns(4)
+            top_freq = df_feats.sort_values("freq_score", ascending=False).iloc[0]
+            top_atraso = df_feats.sort_values("atraso_score", ascending=False).iloc[0]
+            
+            c1.metric("🔥 Más Frecuente (10d)", f"{top_freq['name']} ({top_freq['freq_10']})")
+            c2.metric("❄️ Más Atrasado", f"{top_atraso['name']} ({top_atraso['days_since']}d)")
+            c3.metric("📈 Tendencia Global", "Estable") 
+            c4.metric("🎲 Entropía", "Media") 
+            
+            st.divider()
+            
+            col_charts1, col_charts2 = st.columns(2)
+            
+            with col_charts1:
+                st.markdown("##### 📊 Frecuencia vs Atraso")
+                chart = alt.Chart(df_feats.reset_index()).mark_circle(size=100).encode(
+                    x=alt.X('freq_score', title='Score Frecuencia'),
+                    y=alt.Y('atraso_score', title='Score Atraso'),
+                    color=alt.Color('zone_score', legend=None),
+                    tooltip=['name', 'freq_10', 'days_since']
+                ).interactive()
+                st.altair_chart(chart, use_container_width=True)
+                
+            with col_charts2:
+                st.markdown("##### 🌡️ Top 15 Más Calientes")
+                chart_bar = alt.Chart(df_feats.reset_index().sort_values('freq_score', ascending=False).head(15)).mark_bar().encode(
+                    x=alt.X('name', sort=None, title='Animalito'),
+                    y=alt.Y('freq_score', title='Intensidad'),
+                    color=alt.Color('freq_score', scale=alt.Scale(scheme='orangered'))
+                )
+                st.altair_chart(chart_bar, use_container_width=True)
+            
+            st.markdown("##### 🏆 Ranking Predictivo Individual")
+            st.dataframe(
+                df_feats[['name', 'freq_score', 'atraso_score', 'zone_score']].sort_values('freq_score', ascending=False),
+                use_container_width=True
+            )
 
