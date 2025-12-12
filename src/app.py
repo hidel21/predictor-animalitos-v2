@@ -12,6 +12,8 @@ from collections import Counter, defaultdict
 import logging
 import pytz
 
+from src.date_utils import clamp_date, to_date
+
 from src.historial_client import HistorialClient
 from src.model import MarkovModel
 from src.constantes import ANIMALITOS, COLORES, SECTORES
@@ -49,6 +51,23 @@ st.set_page_config(
     page_title="Predictor La Granjita",
     page_icon="🐮",
     layout="wide"
+)
+
+# CSS defensivo: en algunos temas/entornos (p.ej. Streamlit Cloud) se han observado
+# paneles de pestañas no activas que quedan visibles por estilos globales.
+# Forzamos a ocultar cualquier tab-panel inactivo.
+st.markdown(
+    """
+    <style>
+    div[data-baseweb="tab-panel"][aria-hidden="true"],
+    div[role="tabpanel"][aria-hidden="true"],
+    div[data-baseweb="tab-panel"][hidden],
+    div[role="tabpanel"][hidden] {
+        display: none !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
 )
 
 # Configurar logging
@@ -100,15 +119,25 @@ def render_tablero_ruleta(data):
     # CSS para el tablero
     st.markdown("""
     <style>
+    .roulette-grid {
+        display: grid;
+        grid-template-columns: 90px repeat(3, minmax(90px, 1fr));
+        gap: 8px;
+        align-items: stretch;
+        width: 100%;
+        overflow-x: auto;
+        padding-bottom: 4px;
+    }
     .roulette-cell {
         border: 1px solid #ddd;
         padding: 10px;
         text-align: center;
         border-radius: 5px;
-        margin-bottom: 5px;
+        margin: 0;
         color: white;
         font-weight: bold;
         position: relative;
+        min-height: 62px;
     }
     .roulette-cell.active {
         border: 3px solid #FFD700; /* Dorado para resaltar */
@@ -123,6 +152,70 @@ def render_tablero_ruleta(data):
         font-size: 0.7em;
         display: block;
     }
+    .roulette-zero {
+        min-height: 0;
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+    }
+
+    .sector-table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 6px;
+        overflow-x: auto;
+    }
+    .sector-table th, .sector-table td {
+        border: 1px solid rgba(255,255,255,0.12);
+        padding: 10px 12px;
+        vertical-align: middle;
+    }
+    .sector-table th {
+        background: rgba(255,255,255,0.06);
+        color: rgba(255,255,255,0.9);
+        text-align: left;
+        font-weight: 700;
+    }
+    .sector-letter {
+        width: 52px;
+        text-align: center;
+        font-weight: 800;
+        letter-spacing: 0.06em;
+    }
+    .sector-nums {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+    }
+    .sector-num {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 34px;
+        padding: 6px 10px;
+        border-radius: 999px;
+        border: 1px solid rgba(255,255,255,0.18);
+        font-weight: 800;
+        color: #fff;
+        line-height: 1;
+        user-select: none;
+    }
+    .sector-num.active {
+        border: 2px solid #FFD700;
+        box-shadow: 0 0 8px rgba(255, 215, 0, 0.35);
+    }
+    .sector-num.red { background: #ff0000; }
+    .sector-num.black { background: #000000; }
+    .sector-num.green { background: #008000; }
+
+    @media (max-width: 1100px) {
+        .roulette-grid {
+            grid-template-columns: 80px repeat(3, minmax(80px, 1fr));
+        }
+        .roulette-cell { min-height: 56px; }
+    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -130,26 +223,87 @@ def render_tablero_ruleta(data):
     st.markdown("### Paño Numérico")
     st.caption(f"Los números con borde dorado han salido en los últimos {n_sorteos} sorteos.")
     
-    cols = st.columns(6) # 6 columnas para simular un paño ancho
-    
-    # Ordenar numéricamente
-    sorted_animals = sorted(ANIMALITOS.items(), key=lambda x: int(x[0]) if x[0].isdigit() else -1)
-    
-    for idx, (num, nombre) in enumerate(sorted_animals):
+    # Layout tipo ruleta americana:
+    #   - 0 y 00 en una columna a la izquierda (cada uno ocupa 6 filas)
+    #   - 12 filas x 3 columnas con números 1..36
+    rows = []
+    for r in range(12, 0, -1):
+        rows.append([str(3 * r - 2), str(3 * r - 1), str(3 * r)])
+
+    def _cell_html(num: str, nombre: str, *, extra_classes: str = "") -> str:
         color_bg = COLORES.get(num, "gray")
         is_active = num in ultimos_n
         active_class = "active" if is_active else ""
-        
-        # Ajustar color de fondo real (red/black/green)
         bg_style = f"background-color: {color_bg};"
-        
-        with cols[idx % 6]:
-            st.markdown(f"""
-            <div class="roulette-cell {active_class}" style="{bg_style}">
-                <span class="number">{num}</span>
-                <span class="name">{nombre}</span>
-            </div>
-            """, unsafe_allow_html=True)
+        classes = f"roulette-cell {active_class} {extra_classes}".strip()
+        return (
+            f"<div class=\"{classes}\" style=\"{bg_style}\">"
+            f"<span class=\"number\">{num}</span>"
+            f"<span class=\"name\">{nombre}</span>"
+            f"</div>"
+        )
+
+    html_parts = ["<div class=\"roulette-grid\">"]
+
+    # 0 (filas 1-6)
+    nombre_0 = ANIMALITOS.get("0", "0")
+    html_parts.append(
+        f"<div style=\"grid-column: 1; grid-row: 1 / span 6;\">"
+        f"{_cell_html('0', nombre_0, extra_classes='roulette-zero')}"
+        f"</div>"
+    )
+
+    # 00 (filas 7-12)
+    nombre_00 = ANIMALITOS.get("00", "00")
+    html_parts.append(
+        f"<div style=\"grid-column: 1; grid-row: 7 / span 6;\">"
+        f"{_cell_html('00', nombre_00, extra_classes='roulette-zero')}"
+        f"</div>"
+    )
+
+    # Filas 12..1
+    for i, row_nums in enumerate(rows):
+        grid_row = i + 1
+        for j, num in enumerate(row_nums):
+            nombre = ANIMALITOS.get(num, num)
+            html_parts.append(
+                f"<div style=\"grid-column: {2 + j}; grid-row: {grid_row};\">{_cell_html(num, nombre)}</div>"
+            )
+
+    html_parts.append("</div>")
+    st.markdown("\n".join(html_parts), unsafe_allow_html=True)
+
+    # --- Grupos / Sectores A-F (como la referencia del usuario) ---
+    st.markdown("### GRUPOS (Sectores A–F)")
+    st.caption("Basado en el diagrama de 6 sectores. Los números con borde dorado han salido en los últimos sorteos seleccionados.")
+
+    # Orden fijo A..F usando las claves existentes en constantes.py
+    sector_order = ["Sector A", "Sector B", "Sector C", "Sector D", "Sector E", "Sector F"]
+
+    def _num_chip(num: str) -> str:
+        color = COLORES.get(num, "black")
+        active = "active" if num in ultimos_n else ""
+        nombre = ANIMALITOS.get(num, "")
+        tooltip = f"{num} - {nombre}" if nombre else str(num)
+        return f"<span class=\"sector-num {color} {active}\" title=\"{tooltip}\" aria-label=\"{tooltip}\">{num}</span>"
+
+    table_parts = [
+        "<table class=\"sector-table\">",
+        "<thead><tr><th class=\"sector-letter\">Grupo</th><th>Números</th></tr></thead>",
+        "<tbody>",
+    ]
+    for s_key in sector_order:
+        letter = s_key.split()[-1]  # 'A'..'F'
+        nums = SECTORES.get(s_key, [])
+        chips = "".join(_num_chip(n) for n in nums)
+        table_parts.append(
+            "<tr>"
+            f"<td class=\"sector-letter\">{letter}</td>"
+            f"<td><div class=\"sector-nums\">{chips}</div></td>"
+            "</tr>"
+        )
+    table_parts.append("</tbody></table>")
+    st.markdown("\n".join(table_parts), unsafe_allow_html=True)
 
     st.markdown("---")
     
@@ -258,12 +412,38 @@ def render_backtest_tab(data, start_date, end_date):
         st.warning("Se necesitan más datos históricos para un backtesting fiable (mínimo 50 sorteos).")
         return
 
+    # Normalizar/validar rango de fechas (evita errores de st.date_input cuando el valor por defecto
+    # queda fuera de [min_value, max_value], p.ej. si el usuario selecciona un rango < 7 días).
+    try:
+        start_date = to_date(start_date)
+        end_date = to_date(end_date)
+    except Exception:
+        st.error("Rango de fechas inválido para el backtesting.")
+        return
+
+    if start_date > end_date:
+        st.error("La fecha de inicio no puede ser mayor a la fecha fin.")
+        return
+
     # Configuración
     c1, c2 = st.columns(2)
     with c1:
-        bt_start_date = st.date_input("Fecha Inicio Simulación", value=start_date + timedelta(days=7), min_value=start_date, max_value=end_date)
+        default_bt_start = clamp_date(start_date + timedelta(days=7), start_date, end_date)
+        bt_start_date = st.date_input(
+            "Fecha Inicio Simulación",
+            value=default_bt_start,
+            min_value=start_date,
+            max_value=end_date,
+            key="bt_start_date",
+        )
     with c2:
-        bt_end_date = st.date_input("Fecha Fin Simulación", value=end_date, min_value=bt_start_date, max_value=end_date)
+        bt_end_date = st.date_input(
+            "Fecha Fin Simulación",
+            value=clamp_date(end_date, bt_start_date, end_date),
+            min_value=bt_start_date,
+            max_value=end_date,
+            key="bt_end_date",
+        )
         
     st.markdown("##### Modelos a Evaluar")
     c_m1, c_m2, c_m3 = st.columns(3)
