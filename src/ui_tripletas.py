@@ -198,10 +198,10 @@ def render_tripletas_tab(engine, recomendador: Recomendador):
     with tab_manual:
         st.subheader("Pegar Tripletas Manualmente")
         st.caption("Formato: 3 números separados por guión, barra o espacio. Una tripleta por línea.")
-        
-        # Inicializar estado para el texto manual si no existe
-        if 'manual_tripletas_text' not in st.session_state:
-            st.session_state['manual_tripletas_text'] = ""
+
+        # Limpieza segura del input: debe ocurrir ANTES de crear el widget con esa key.
+        if st.session_state.pop('clear_manual_tripletas_input', False):
+            st.session_state['manual_tripletas_input'] = ""
             
         texto_manual = st.text_area("Pega aquí tus tripletas", height=150, 
                                     placeholder="26/07/06\n12-15-30\n00 11 22",
@@ -234,7 +234,9 @@ def render_tripletas_tab(engine, recomendador: Recomendador):
                     
                     # Limpiar estado
                     st.session_state['procesar_manual_clicked'] = False
-                    st.session_state['manual_tripletas_input'] = "" # Limpiar input
+                    # No podemos mutar el valor de un widget (misma key) después de ser creado.
+                    # Marcamos un flag y limpiamos ANTES del widget en el próximo rerun.
+                    st.session_state['clear_manual_tripletas_input'] = True
                     time.sleep(1)
                     st.rerun()
 
