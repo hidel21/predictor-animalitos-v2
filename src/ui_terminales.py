@@ -110,8 +110,9 @@ def _to_historial_df(data) -> pd.DataFrame:
 def render_terminales_tab(data):
     """
     Renderiza la pestaña de Análisis por Terminales Diarios (HU-039).
-    Permite visualizar cronológicamente los sorteos filtrados por terminal,
-    resaltando el número ganador dentro de su familia de terminales.
+    Permite visualizar cronológicamente los sorteos del rango seleccionado.
+    En cada fila se muestra la familia del terminal del número que salió (dinámico por sorteo)
+    y se resalta el ganador.
     """
     st.header("🧩 Análisis por Terminales Diarios")
 
@@ -140,7 +141,7 @@ def render_terminales_tab(data):
     min_d = df_work["fecha_dt"].min().date()
     max_d = df_work["fecha_dt"].max().date()
 
-    c_range1, c_range2, c_range3, c_range4 = st.columns([1, 1, 1, 2])
+    c_range1, c_range2, c_range3 = st.columns([1, 1, 2])
     with c_range1:
         fecha_inicio = st.date_input("Desde", value=min_d, min_value=min_d, max_value=max_d, key="term_fecha_inicio")
     with c_range2:
@@ -151,24 +152,13 @@ def render_terminales_tab(data):
         return
 
     with c_range3:
-        terminal = st.selectbox("Terminal", options=list(range(10)), index=0, key="term_digit")
-    with c_range4:
-        mostrar_todo_el_dia = st.toggle(
-            "Mostrar todo el día (1er → último sorteo)",
-            value=False,
-            help="Si está activo, verás todas las horas del día en el rango, aunque no corresponda al terminal seleccionado."
+        terminales_seleccionados = st.multiselect(
+            "Terminales (opcional)",
+            options=list(range(10)),
+            default=list(range(10)),
+            help="Por defecto se muestran todos los sorteos. Si eliges terminales, se filtra a esos terminales.",
+            key="term_terminales_sel",
         )
-
-    # Familia / número exacto
-    siblings_keys = _siblings_for_terminal(int(terminal))
-    siblings_opts = ["(Cualquiera)"] + siblings_keys
-    exact_key = st.selectbox(
-        "Número exacto (opcional)",
-        options=siblings_opts,
-        index=0,
-        format_func=lambda k: k if k == "(Cualquiera)" else f"{_format_num(k)} - {ANIMALITOS.get(k, '')}",
-        help="Si eliges un número, se muestran solo las filas donde salió ese número dentro del rango."
-    )
 
     # Filtro de días de la semana (opcional)
     dias_semana = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
@@ -195,13 +185,9 @@ def render_terminales_tab(data):
     if dias_seleccionados:
         df_filtered = df_filtered[df_filtered['dia_nombre'].isin(dias_seleccionados)]
 
-    # 3) Filtrar por terminal (si no está activado el modo "todo el día")
-    if not mostrar_todo_el_dia:
-        df_filtered = df_filtered[df_filtered['terminal'] == int(terminal)]
-
-    # 4) Filtrar por número exacto (opcional)
-    if exact_key != "(Cualquiera)":
-        df_filtered = df_filtered[df_filtered['numero_key'] == exact_key]
+    # 3) Filtrar por terminales (opcional)
+    if terminales_seleccionados and len(terminales_seleccionados) < 10:
+        df_filtered = df_filtered[df_filtered['terminal'].isin([int(t) for t in terminales_seleccionados])]
 
     # Preparar orden por hora real
     df_filtered['hora_min'] = df_filtered['hora'].apply(_parse_hora_to_minutes)
@@ -228,10 +214,13 @@ def render_terminales_tab(data):
             st.dataframe(df_term_counts, width="stretch", height=260)
 
         with c2:
-            df_sel = df_rango[df_rango['terminal'] == int(terminal)]
+            df_sel = df_rango.copy()
+            if terminales_seleccionados and len(terminales_seleccionados) < 10:
+                df_sel = df_sel[df_sel['terminal'].isin([int(t) for t in terminales_seleccionados])]
+
             if df_sel.empty:
-                st.caption(f"Distribución de números (terminal {terminal})")
-                st.info("No hay sorteos para ese terminal en el rango.")
+                st.caption("Distribución de números (terminales seleccionados)")
+                st.info("No hay sorteos para esos terminales en el rango.")
             else:
                 num_counts = df_sel['numero_key'].value_counts()
                 df_num_counts = (
@@ -241,7 +230,7 @@ def render_terminales_tab(data):
                 df_num_counts['numero_fmt'] = df_num_counts['numero'].apply(_format_num)
                 df_num_counts['animal'] = df_num_counts['numero'].map(lambda k: ANIMALITOS.get(k, ""))
                 df_num_counts = df_num_counts[['numero_fmt', 'animal', 'veces']]
-                st.caption(f"Distribución de números (terminal {terminal})")
+                st.caption("Distribución de números (terminales seleccionados)")
                 st.dataframe(df_num_counts, width="stretch", height=260)
 
     # --- Visualización ---
@@ -273,11 +262,15 @@ def render_terminales_tab(data):
         grupo_sorted = grupo.sort_values(by=['hora_min', 'hora'], ascending=[True, True])
 
         rows_html = ""
-        siblings_keys = _siblings_for_terminal(int(terminal))
 
         for _, row in grupo_sorted.iterrows():
             hora = row['hora']
             ganador_key = str(row.get('numero_key', ''))
+
+            row_terminal = int(row.get('terminal')) if pd.notna(row.get('terminal')) else None
+            if row_terminal is None:
+                continue
+            siblings_keys = _siblings_for_terminal(row_terminal)
 
             # Construir HTML de la fila
             siblings_html: list[str] = []
@@ -300,25 +293,18 @@ def render_terminales_tab(data):
 
             siblings_str = " <span style='color:#444'>-</span> ".join(siblings_html)
 
-            # Si se muestra todo el día, puede que el ganador no pertenezca al terminal seleccionado.
-            # En ese caso mostramos una 'chapita' con el número real para no perder contexto.
-            ganador_badge = ""
-            if mostrar_todo_el_dia and (ganador_key not in siblings_keys):
-                g_disp = _format_num(ganador_key)
-                g_name = ANIMALITOS.get(ganador_key, "")
-                g_title = f"{g_disp} - {g_name}" if g_name else g_disp
-                ganador_badge = (
-                    f"<span title=\"{g_title}\" style=\""
-                    "background-color: rgba(255,255,255,0.06); "
-                    "color: rgba(255,255,255,0.85); "
-                    "padding: 2px 8px; "
-                    "border-radius: 999px; "
-                    "border: 1px solid rgba(255,255,255,0.14); "
-                    "margin-left: 10px;"
-                    "\">"
-                    f"Real: {g_disp}"
-                    "</span>"
-                )
+            terminal_badge = (
+                "<span style=\""
+                "background-color: rgba(255,255,255,0.06); "
+                "color: rgba(255,255,255,0.85); "
+                "padding: 2px 8px; "
+                "border-radius: 999px; "
+                "border: 1px solid rgba(255,255,255,0.14); "
+                "margin-left: 10px;"
+                "\">"
+                f"T{row_terminal}"
+                "</span>"
+            )
 
             row_style = (
                 "display: flex; "
@@ -335,7 +321,7 @@ def render_terminales_tab(data):
             rows_html += (
                 f"<div style=\"{row_style}\">"
                 f"<span style=\"min-width: 100px; color: #EEE; font-weight: bold;\">{hora}</span>"
-                f"{ganador_badge}"
+                f"{terminal_badge}"
                 f"<span style=\"color: #555; margin: 0 15px;\">|</span>"
                 f"<span>{siblings_str}</span>"
                 f"</div>"
