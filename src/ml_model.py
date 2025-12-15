@@ -51,6 +51,7 @@ class MLPredictor:
         self.last_training_time = None
         self.is_trained = False
         self.params = params
+        self.terminal_patterns: Optional[Dict[str, Any]] = None
 
     def _prepare_features(self, lookback: int = 3) -> Tuple[Any, Any]:
         """
@@ -164,6 +165,14 @@ class MLPredictor:
         
         self.is_trained = True
         self.last_training_time = datetime.now()
+
+        # Aprendizaje de patrones por terminal (para enriquecer análisis/predicción)
+        try:
+            engineer = FeatureEngineer(self.data)
+            self.terminal_patterns = engineer.learn_terminal_patterns(last_n_sorteos=200)
+        except Exception as e:
+            logger.warning(f"No se pudieron calcular patrones de terminal: {e}")
+
         logger.info("Modelo ML entrenado exitosamente.")
 
     def predict(self, top_n: int = 3) -> List[MLPrediction]:
@@ -185,10 +194,12 @@ class MLPredictor:
              for _, row in features_df.iterrows():
                  # Score heurístico basado en features avanzadas (Meta-Modelo implícito)
                  score = (
-                     row['freq_recent'] * 0.3 +
-                     row['prob_markov'] * 0.3 +
-                     row['sector_intensity'] * 0.2 +
-                     row['atraso_norm'] * 0.2
+                     row.get('freq_recent', 0.0) * 0.24 +
+                     row.get('prob_markov', 0.0) * 0.24 +
+                     row.get('sector_intensity', 0.0) * 0.18 +
+                     row.get('atraso_norm', 0.0) * 0.18 +
+                     row.get('freq_terminal_recent', 0.0) * 0.08 +
+                     row.get('prob_terminal_markov', 0.0) * 0.08
                  )
                  
                  predictions.append(MLPrediction(

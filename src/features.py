@@ -13,6 +13,9 @@ from src.radar import RadarAnalyzer
 from src.ruleta import ROULETTE_ORDER
 from src.patrones import GestorPatrones
 
+import json
+from pathlib import Path
+
 class FeatureEngineer:
     def __init__(self, historial: HistorialData):
         self.historial = historial
@@ -41,6 +44,37 @@ class FeatureEngineer:
         # Contexto global reciente
         recent_df = self.df.iloc[-last_n_sorteos:] if last_n_sorteos > 0 else self.df
         recent_counts = Counter(recent_df['numero'])
+
+        # --- Terminales (aprendizaje por terminal) ---
+        def _terminal_of(n: str) -> int | None:
+            if n is None:
+                return None
+            s = str(n)
+            if s == "00":
+                return 0
+            try:
+                return int(s) % 10
+            except Exception:
+                return None
+
+        recent_terminals = [t for t in recent_df['numero'].map(_terminal_of).tolist() if t is not None]
+        terminal_counts = Counter(recent_terminals)
+
+        # Matriz de transiciones entre terminales (ventana reciente)
+        terminal_transitions = Counter()
+        for i in range(1, len(recent_terminals)):
+            terminal_transitions[(recent_terminals[i - 1], recent_terminals[i])] += 1
+
+        last_terminal = _terminal_of(self.df.iloc[-1]['numero']) if not self.df.empty else None
+
+        # Racha del último terminal (cuántos sorteos seguidos con el mismo terminal al final)
+        last_terminal_streak = 0
+        if last_terminal is not None and recent_terminals:
+            for t in reversed(recent_terminals):
+                if t == last_terminal:
+                    last_terminal_streak += 1
+                else:
+                    break
         
         # Último número salido
         last_num = self.df.iloc[-1]['numero'] if not self.df.empty else None
@@ -85,6 +119,23 @@ class FeatureEngineer:
             
             # --- 1. Features Individuales ---
             f['freq_recent'] = recent_counts.get(num_str, 0) / last_n_sorteos
+
+            # Terminal features
+            t_num = _terminal_of(num_str)
+            f['terminal'] = t_num if t_num is not None else -1
+            f['freq_terminal_recent'] = terminal_counts.get(t_num, 0) / last_n_sorteos if t_num is not None else 0.0
+            f['is_same_terminal_as_last'] = 1 if (last_terminal is not None and t_num == last_terminal) else 0
+            f['last_terminal_streak'] = float(last_terminal_streak)
+
+            # Probabilidad de transición de terminal desde el último terminal observado
+            prob_t = 0.0
+            if last_terminal is not None and t_num is not None:
+                denom = 0
+                for k in range(10):
+                    denom += terminal_transitions.get((last_terminal, k), 0)
+                if denom > 0:
+                    prob_t = terminal_transitions.get((last_terminal, t_num), 0) / denom
+            f['prob_terminal_markov'] = float(prob_t)
             f['atraso'] = atrasos_num.get(num_str, 0)
             f['atraso_norm'] = min(f['atraso'] / 30.0, 1.0) # Normalizado a 30 días
             
@@ -139,6 +190,78 @@ class FeatureEngineer:
             features_list.append(f)
             
         return pd.DataFrame(features_list)
+
+    def learn_terminal_patterns(self, last_n_sorteos: int = 200) -> Dict:
+        """Aprende patrones simples por terminal en la ventana reciente.
+
+        Retorna un dict con:
+        - terminal_counts: conteo por terminal
+        - terminal_freq: frecuencia por terminal
+        - transition_matrix: matriz 10x10 de probabilidades P(next|prev)
+        - best_next_terminal: mejor terminal siguiente por terminal previo
+        """
+
+        dfw = self.df.iloc[-last_n_sorteos:] if last_n_sorteos > 0 else self.df
+        if dfw.empty or 'numero' not in dfw.columns:
+            return {
+                "window": int(last_n_sorteos),
+                "terminal_counts": {},
+                "terminal_freq": {},
+                "transition_matrix": [[0.0] * 10 for _ in range(10)],
+                "best_next_terminal": {},
+            }
+
+        def _terminal_of(n: str) -> int | None:
+            if n is None:
+                return None
+            s = str(n)
+            if s == "00":
+                return 0
+            try:
+                return int(s) % 10
+            except Exception:
+                return None
+
+        terminals = [t for t in dfw['numero'].map(_terminal_of).tolist() if t is not None]
+        counts = Counter(terminals)
+        total = len(terminals)
+        freqs = {str(k): (v / total if total > 0 else 0.0) for k, v in sorted(counts.items())}
+
+        trans = Counter()
+        for i in range(1, len(terminals)):
+            trans[(terminals[i - 1], terminals[i])] += 1
+
+        matrix: list[list[float]] = [[0.0] * 10 for _ in range(10)]
+        best_next: dict[str, int] = {}
+        for prev in range(10):
+            denom = sum(trans[(prev, nxt)] for nxt in range(10))
+            if denom > 0:
+                row = []
+                for nxt in range(10):
+                    p = trans[(prev, nxt)] / denom
+                    matrix[prev][nxt] = float(p)
+                    row.append((p, nxt))
+                best_next[str(prev)] = max(row)[1]
+            else:
+                best_next[str(prev)] = -1
+
+        return {
+            "window": int(last_n_sorteos),
+            "terminal_counts": {str(k): int(v) for k, v in sorted(counts.items())},
+            "terminal_freq": freqs,
+            "transition_matrix": matrix,
+            "best_next_terminal": best_next,
+        }
+
+    def export_terminal_patterns(self, file_path: str = "terminal_patterns.json", last_n_sorteos: int = 200) -> str:
+        """Exporta a JSON los patrones por terminal aprendidos.
+
+        Retorna el path escrito.
+        """
+        patterns = self.learn_terminal_patterns(last_n_sorteos=last_n_sorteos)
+        out = Path(file_path)
+        out.write_text(json.dumps(patterns, ensure_ascii=False, indent=2), encoding="utf-8")
+        return str(out)
 
     def prepare_training_dataset(self, window_size: int = 10) -> pd.DataFrame:
         """

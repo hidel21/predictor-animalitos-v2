@@ -5,6 +5,7 @@ from src.ml_model import MLPredictor, HAS_ML
 from src.prediction_logger import PredictionLogger
 from src.repositories import guardar_prediccion, obtener_ultimas_predicciones
 from src.predictive_engine import PredictiveEngine
+from src.features import FeatureEngineer
 
 def render_ml_tab(data, engine):
     st.subheader("🧠 Motor Predictivo de Machine Learning (IA)")
@@ -256,4 +257,14 @@ def render_ml_tab(data, engine):
                     st.success("Métricas guardadas en DB (correlacion_numeros, markov_transiciones).")
                 except Exception as e:
                     st.error(f"Error guardando métricas: {e}")
+        st.divider()
+        st.subheader("🧠 Patrones por Terminal (ML)")
+        st.caption("Aprende y exporta patrones de transiciones/frecuencia de terminales a partir del historial cargado.")
+        if st.button("Exportar patrones de terminales (JSON)"):
+            try:
+                eng = FeatureEngineer(data)
+                out_path = eng.export_terminal_patterns(file_path="terminal_patterns.json", last_n_sorteos=200)
+                st.success(f"Patrones exportados a: {out_path}")
+            except Exception as e:
+                st.error(f"No se pudo exportar patrones: {e}")
 

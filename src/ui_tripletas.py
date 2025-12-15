@@ -15,6 +15,17 @@ def render_tripletas_tab(engine, recomendador: Recomendador):
     st.header("🧩 Gestión de Tripletas - La Granjita")
     
     gestor = GestorTripletas(engine)
+
+    # --- HU-041: Panel superior de rendimiento real ---
+    try:
+        resumen_7d = gestor.obtener_resumen_global(days=7)
+        cA, cB, cC = st.columns(3)
+        cA.metric("ROI (últimos 7 días)", f"{resumen_7d['roi_promedio']:.2f}%")
+        cB.metric("Balance (últimos 7 días)", f"{resumen_7d['balance_total']:,.2f} Bs")
+        cC.metric("Estrategia top actual", resumen_7d.get("estrategia_top") or "(sin datos)")
+        st.divider()
+    except Exception as e:
+        st.caption(f"(HU-041) Panel de rendimiento no disponible: {e}")
     
     # --- Configuración Global ---
     with st.expander("⚙️ Configuración de Nueva Sesión", expanded=True):
@@ -33,6 +44,33 @@ def render_tripletas_tab(engine, recomendador: Recomendador):
     # --- TAB 1: Generación Automática ---
     with tab_gen:
         st.subheader("Generar Tripletas desde Sexteto Base")
+
+        # --- HU-041: Estrategia recomendada por desempeño ---
+        ranking = None
+        try:
+            ranking = gestor.obtener_ranking_estrategias(min_sesiones=3)
+        except Exception:
+            ranking = None
+
+        if ranking is not None and not ranking.empty:
+            top = ranking.iloc[0]
+            tendencia = "Estable"
+            st.markdown("#### 🏅 Estrategia recomendada por desempeño")
+            st.info(
+                f"Top: **{top['origen_sexteto']}** | "
+                f"Score: {top['score']:.2f} | ROI ponderado: {top['roi_weighted']:.2f}% | "
+                f"Sesiones: {int(top['sesiones'])} | Tendencia: {tendencia}"
+            )
+
+            perdedoras = ranking[ranking["flag_perdedora"] == True]
+            if not perdedoras.empty:
+                st.warning(
+                    "Estrategias penalizadas por ROI negativo consistente: "
+                    + ", ".join(perdedoras["origen_sexteto"].astype(str).tolist())
+                )
+        else:
+            st.markdown("#### 🏅 Estrategia recomendada por desempeño")
+            st.caption("Aún no hay sesiones finalizadas con métricas suficientes para recomendar una estrategia.")
         
         # Layout Vertical para evitar superposiciones
         st.markdown("#### 1. Selección de Números")
@@ -92,13 +130,32 @@ def render_tripletas_tab(engine, recomendador: Recomendador):
             for idx, cand in enumerate(candidates):
                 with cols[idx]:
                     with st.container(border=True):
-                        st.markdown(f"### {cand['tipo']}")
+                        label_tipo = cand['tipo']
+                        # Marcar recomendada si coincide
+                        if ranking is not None and not ranking.empty:
+                            if str(ranking.iloc[0]['origen_sexteto']) == f"IA_PREDICTIVO_{cand['tipo']}":
+                                label_tipo = f"⭐ {label_tipo}"
+                        st.markdown(f"### {label_tipo}")
                         st.caption(cand['desc'])
                         st.metric("Score Sexteto", cand['score'])
                         st.write(f"**Números:** {cand['numeros']}")
                         
                         if st.button(f"Usar {cand['tipo']}", key=f"btn_cand_{idx}", width="stretch"):
                             st.session_state['selected_candidate_idx'] = idx
+
+            # Botón rápido: aplicar recomendación (si existe)
+            if ranking is not None and not ranking.empty:
+                rec_origin = str(ranking.iloc[0]['origen_sexteto'])
+                # Buscar índice del candidato que coincida
+                rec_idx = None
+                for i, cand in enumerate(candidates):
+                    if rec_origin == f"IA_PREDICTIVO_{cand['tipo']}":
+                        rec_idx = i
+                        break
+                if rec_idx is not None:
+                    if st.button("✅ Usar estrategia recomendada", width="stretch", key="btn_use_recommended_strategy"):
+                        st.session_state['selected_candidate_idx'] = rec_idx
+                        st.rerun()
             
             # Si hay uno seleccionado
             if st.session_state['selected_candidate_idx'] is not None:
@@ -165,9 +222,13 @@ def render_tripletas_tab(engine, recomendador: Recomendador):
                 
                 st.divider()
                 if st.button("✅ Confirmar y Crear Sesión", type="primary", width="stretch"):
-                    sesion_id = gestor.crear_sesion(hora_inicio, monto, numeros_seleccionados)
-                    # Guardar tripletas
-                    gestor.agregar_tripletas(sesion_id, [list(p) for p in permutas], es_generada=True)
+                    try:
+                        sesion_id = gestor.crear_sesion(hora_inicio, monto, numeros_seleccionados)
+                        # Guardar tripletas
+                        gestor.agregar_tripletas(sesion_id, [list(p) for p in permutas], es_generada=True)
+                    except Exception as e:
+                        st.error(f"No se pudo crear la sesión: {e}")
+                        st.stop()
                     
                     # Actualizar origen del sexteto en BD (HU-036)
                     try:
@@ -199,6 +260,18 @@ def render_tripletas_tab(engine, recomendador: Recomendador):
         st.subheader("Pegar Tripletas Manualmente")
         st.caption("Formato: 3 números separados por guión, barra o espacio. Una tripleta por línea.")
 
+        st.markdown("#### Sexteto base (obligatorio)")
+        opts = [f"{k} - {v}" for k, v in ANIMALITOS.items()]
+        sel_base_manual = st.multiselect(
+            "Selecciona exactamente 6 números para el sexteto base",
+            opts,
+            max_selections=6,
+            key="manual_sexteto_base",
+        )
+        numeros_base_manual: list[int] = []
+        if len(sel_base_manual) == 6:
+            numeros_base_manual = [int(s.split(" - ")[0]) for s in sel_base_manual]
+
         # Limpieza segura del input: debe ocurrir ANTES de crear el widget con esa key.
         if st.session_state.pop('clear_manual_tripletas_input', False):
             st.session_state['manual_tripletas_input'] = ""
@@ -228,9 +301,13 @@ def render_tripletas_tab(engine, recomendador: Recomendador):
                     st.write(tripletas_validas)
                 
                 if st.button("💾 Guardar Sesión Manual"):
-                    sesion_id = gestor.crear_sesion(hora_inicio, monto, numeros_base=None)
-                    gestor.agregar_tripletas(sesion_id, tripletas_validas, es_generada=False)
-                    st.success(f"Sesión Manual #{sesion_id} guardada!")
+                    try:
+                        sesion_id = gestor.crear_sesion(hora_inicio, monto, numeros_base_manual)
+                        gestor.agregar_tripletas(sesion_id, tripletas_validas, es_generada=False)
+                        st.success(f"Sesión Manual #{sesion_id} guardada!")
+                    except Exception as e:
+                        st.error(f"No se pudo crear la sesión manual: {e}")
+                        st.stop()
                     
                     # Limpiar estado
                     st.session_state['procesar_manual_clicked'] = False
@@ -333,19 +410,46 @@ def render_tripletas_tab(engine, recomendador: Recomendador):
                         mime="text/csv",
                     )
 
+                    st.markdown("---")
+                    if st.button("🛑 Finalizar sesión ahora (guardar ROI)", key=f"btn_close_{row['id']}"):
+                        try:
+                            gestor.cerrar_sesion(int(row['id']))
+                            st.success("Sesión finalizada y métricas guardadas.")
+                            time.sleep(1)
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"No se pudo finalizar la sesión: {e}")
+
         st.divider()
         st.subheader("📜 Historial Reciente")
         historial = gestor.obtener_historial_sesiones(limit=5)
         if not historial.empty:
-            # Formatear para display
             hist_display = historial.copy()
-            hist_display['roi'] = hist_display['roi'].apply(lambda x: f"{x:.1f}%")
-            hist_display['tasa_exito'] = hist_display['tasa_exito'].apply(lambda x: f"{x:.1f}%")
-            hist_display['ganancia'] = hist_display['ganancia'].apply(lambda x: f"{x:,.2f} Bs")
+            hist_display['roi'] = hist_display['roi'].fillna(0).apply(lambda x: f"{float(x):.2f}%")
+            hist_display['balance_neto'] = hist_display['balance_neto'].fillna(0).apply(lambda x: f"{float(x):,.2f} Bs")
+            hist_display['tasa_exito'] = hist_display['tasa_exito'].fillna(0).apply(lambda x: f"{float(x):.1f}%")
             
-            st.dataframe(hist_display[['id', 'fecha_inicio', 'hora_inicio', 'estado', 'roi', 'tasa_exito', 'ganancia']], width="stretch")
+            st.dataframe(
+                hist_display[[
+                    'id', 'fecha_inicio', 'hora_inicio', 'estado', 'origen_sexteto',
+                    'tripletas_total', 'aciertos', 'tasa_exito',
+                    'balance_neto', 'roi', 'fecha_cierre', 'invalida'
+                ]],
+                width="stretch"
+            )
         else:
             st.info("No hay historial disponible.")
+
+        st.divider()
+        st.subheader("📈 Reporte por estrategia (HU-041)")
+        try:
+            rep = gestor.obtener_reporte_estrategias(days=7)
+            if rep.empty:
+                st.info("No hay datos suficientes para el reporte por estrategia.")
+            else:
+                st.dataframe(rep, width="stretch")
+        except Exception as e:
+            st.error(f"Error generando reporte por estrategia: {e}")
 
     # --- TAB 4: Análisis Predictivo ---
     with tab_predictivo:

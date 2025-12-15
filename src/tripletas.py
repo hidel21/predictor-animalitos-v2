@@ -7,9 +7,112 @@ from sqlalchemy.engine import Engine
 from sqlalchemy import text
 import json
 
+
+def validar_numeros_base(numeros_base: Optional[List[int]]) -> List[int]:
+    """Valida el sexteto base según HU-041.
+
+    Reglas:
+    - Debe existir y tener exactamente 6 números
+    - Sin duplicados
+    - Rango 0–36
+    """
+    if numeros_base is None:
+        raise ValueError("El sexteto (numeros_base) es obligatorio.")
+    if len(numeros_base) != 6:
+        raise ValueError("El sexteto debe tener exactamente 6 números.")
+
+    try:
+        nums = [int(x) for x in numeros_base]
+    except Exception:
+        raise ValueError("El sexteto contiene valores no numéricos.")
+
+    if any(n < 0 or n > 36 for n in nums):
+        raise ValueError("El sexteto contiene números fuera de rango (0–36).")
+    if len(set(nums)) != 6:
+        raise ValueError("El sexteto no puede contener números repetidos.")
+    return nums
+
+
+def calcular_metricas_sesion(tripletas_total: int, aciertos: int, monto_unitario: float) -> Dict[str, float]:
+    """Calcula métricas financieras (HU-041)."""
+    tripletas_total = int(tripletas_total or 0)
+    aciertos = int(aciertos or 0)
+
+    try:
+        monto = float(monto_unitario)
+    except Exception:
+        monto = 0.0
+
+    inversion_total = float(tripletas_total) * monto
+    ganancia_bruta = float(aciertos) * (monto * 50.0)
+    balance_neto = ganancia_bruta - inversion_total
+    roi = (balance_neto / inversion_total * 100.0) if inversion_total > 0 else 0.0
+
+    return {
+        "tripletas_total": tripletas_total,
+        "aciertos": aciertos,
+        "inversion_total": round(inversion_total, 2),
+        "ganancia_bruta": round(ganancia_bruta, 2),
+        "balance_neto": round(balance_neto, 2),
+        "roi": round(roi, 2),
+    }
+
 class GestorTripletas:
     def __init__(self, engine: Engine):
         self.engine = engine
+
+    def _calcular_y_guardar_metricas(self, conn, sesion_id: int, fecha_cierre: datetime, marcar_invalida_si_sin_datos: bool = True):
+        """Calcula métricas desde BD y las persiste en tripleta_sesiones."""
+        sesion = conn.execute(text("SELECT id, monto_unitario FROM tripleta_sesiones WHERE id = :id"), {"id": sesion_id}).fetchone()
+        if not sesion:
+            return
+
+        # Total de tripletas en sesión y aciertos (hits > 0)
+        agg = conn.execute(text("""
+            SELECT
+                COUNT(*) AS tripletas_total,
+                SUM(CASE WHEN hits > 0 THEN 1 ELSE 0 END) AS aciertos
+            FROM tripletas
+            WHERE sesion_id = :id
+        """), {"id": sesion_id}).fetchone()
+
+        tripletas_total = int(agg.tripletas_total or 0)
+        aciertos = int(agg.aciertos or 0)
+        monto = float(sesion.monto_unitario or 0)
+
+        metricas = calcular_metricas_sesion(tripletas_total, aciertos, monto)
+
+        invalida = False
+        advertencia = None
+        if marcar_invalida_si_sin_datos and metricas["tripletas_total"] == 0:
+            invalida = True
+            advertencia = "Sesión sin tripletas registradas (no participa en ranking)."
+        if metricas["inversion_total"] <= 0:
+            # ROI debe quedar 0
+            metricas["roi"] = 0.0
+            invalida = True
+            advertencia = advertencia or "Inversión total = 0 (ROI forzado a 0)."
+
+        conn.execute(text("""
+            UPDATE tripleta_sesiones
+            SET
+                tripletas_total = :tripletas_total,
+                aciertos = :aciertos,
+                inversion_total = :inversion_total,
+                ganancia_bruta = :ganancia_bruta,
+                balance_neto = :balance_neto,
+                roi = :roi,
+                fecha_cierre = :fecha_cierre,
+                invalida = :invalida,
+                advertencia = :advertencia
+            WHERE id = :id
+        """), {
+            **metricas,
+            "fecha_cierre": fecha_cierre,
+            "invalida": invalida,
+            "advertencia": advertencia,
+            "id": sesion_id,
+        })
 
     def parsear_tripletas_manuales(self, texto: str) -> Tuple[List[List[int]], List[str]]:
         """
@@ -50,6 +153,12 @@ class GestorTripletas:
 
     def crear_sesion(self, hora_inicio: time, monto: float, numeros_base: Optional[List[int]] = None) -> int:
         """Crea una nueva sesión de tripletas y retorna su ID."""
+
+        # Validación bloqueante HU-041
+        base_validada = validar_numeros_base(numeros_base)
+        if monto is None or float(monto) <= 0:
+            raise ValueError("El monto_unitario debe ser mayor a 0.")
+
         query = text("""
             INSERT INTO tripleta_sesiones (hora_inicio, monto_unitario, numeros_base, fecha_inicio)
             VALUES (:hora, :monto, :base, CURRENT_DATE)
@@ -59,7 +168,7 @@ class GestorTripletas:
             result = conn.execute(query, {
                 "hora": hora_inicio,
                 "monto": monto,
-                "base": numeros_base
+                "base": base_validada
             })
             return result.scalar()
 
@@ -88,30 +197,161 @@ class GestorTripletas:
             return pd.read_sql(query, conn)
 
     def obtener_historial_sesiones(self, limit: int = 10) -> pd.DataFrame:
-        """Obtiene las últimas N sesiones con métricas básicas."""
+        """Obtiene las últimas N sesiones con métricas persistidas (HU-041)."""
         query = text("""
-            SELECT s.id, s.fecha_inicio, s.hora_inicio, s.estado, s.sorteos_analizados,
-                   COUNT(t.id) as total_tripletas,
-                   SUM(CASE WHEN t.estado = 'GANADORA' THEN 1 ELSE 0 END) as ganadoras,
-                   s.monto_unitario
+            SELECT
+                s.id,
+                s.fecha_inicio,
+                s.hora_inicio,
+                s.estado,
+                s.sorteos_analizados,
+                s.origen_sexteto,
+                s.fecha_cierre,
+                s.tripletas_total,
+                s.aciertos,
+                s.inversion_total,
+                s.ganancia_bruta,
+                s.balance_neto,
+                s.roi,
+                s.invalida,
+                s.advertencia
             FROM tripleta_sesiones s
-            LEFT JOIN tripletas t ON s.id = t.sesion_id
-            GROUP BY s.id
             ORDER BY s.id DESC
             LIMIT :limit
         """)
         with self.engine.connect() as conn:
             df = pd.read_sql(query, conn, params={"limit": limit})
-            
-        # Calcular ROI y Éxito
+
+        # Derivados de display (sin recalcular ROI)
         if not df.empty:
-            df['inversion'] = df['total_tripletas'] * df['monto_unitario']
-            df['ganancia'] = df['ganadoras'] * df['monto_unitario'] * 50
-            df['balance'] = df['ganancia'] - df['inversion']
-            df['roi'] = df.apply(lambda x: (x['balance'] / x['inversion'] * 100) if x['inversion'] > 0 else 0, axis=1)
-            df['tasa_exito'] = df.apply(lambda x: (x['ganadoras'] / x['total_tripletas'] * 100) if x['total_tripletas'] > 0 else 0, axis=1)
-            
+            df["tasa_exito"] = df.apply(
+                lambda x: (float(x["aciertos"] or 0) / float(x["tripletas_total"] or 0) * 100.0)
+                if float(x["tripletas_total"] or 0) > 0 else 0.0,
+                axis=1,
+            )
         return df
+
+    def obtener_reporte_estrategias(self, days: int = 7) -> pd.DataFrame:
+        """Reporte por estrategia/origen (HU-041)."""
+        query = text("""
+            SELECT
+              origen_sexteto,
+              COUNT(*) AS sesiones,
+              SUM(COALESCE(aciertos, 0)) AS aciertos_total,
+              ROUND(AVG(COALESCE(roi, 0)), 2) AS roi_promedio,
+              SUM(COALESCE(balance_neto, 0)) AS balance_total,
+              ROUND(AVG(CASE WHEN fecha_cierre >= (NOW() - (:days || ' days')::interval) THEN COALESCE(roi, 0) ELSE NULL END), 2) AS roi_ultimos_dias
+            FROM tripleta_sesiones
+            WHERE estado = 'FINALIZADA'
+              AND COALESCE(invalida, FALSE) = FALSE
+              AND COALESCE(inversion_total, 0) > 0
+            GROUP BY origen_sexteto
+            ORDER BY roi_promedio DESC
+        """)
+        with self.engine.connect() as conn:
+            return pd.read_sql(query, conn, params={"days": int(days)})
+
+    def obtener_ranking_estrategias(self, min_sesiones: int = 3) -> pd.DataFrame:
+        """Construye ranking ponderado (HU-041).
+
+        Score = 60% ROI ponderado por recencia + 25% balance total (normalizado) + 15% consistencia.
+        """
+        query = text("""
+            SELECT
+                id, origen_sexteto, fecha_cierre, roi, balance_neto
+            FROM tripleta_sesiones
+            WHERE estado = 'FINALIZADA'
+              AND COALESCE(invalida, FALSE) = FALSE
+              AND COALESCE(inversion_total, 0) > 0
+              AND fecha_cierre IS NOT NULL
+        """)
+        with self.engine.connect() as conn:
+            df = pd.read_sql(query, conn)
+
+        if df.empty:
+            return df
+
+        df["fecha_cierre"] = pd.to_datetime(df["fecha_cierre"], errors="coerce")
+        df = df.dropna(subset=["fecha_cierre"])
+        if df.empty:
+            return df
+
+        now = pd.Timestamp.utcnow()
+        # Recencia: half-life 14 días
+        age_days = (now - df["fecha_cierre"]).dt.total_seconds() / 86400.0
+        half_life = 14.0
+        df["w"] = (0.5 ** (age_days / half_life)).clip(lower=0.05, upper=1.0)
+
+        # Agregación por estrategia
+        g = df.groupby("origen_sexteto")
+        out = g.apply(
+            lambda x: pd.Series({
+                "sesiones": int(len(x)),
+                "roi_avg": float(x["roi"].mean()),
+                "roi_std": float(x["roi"].std(ddof=0) if len(x) > 1 else 0.0),
+                "roi_weighted": float((x["roi"] * x["w"]).sum() / x["w"].sum()) if x["w"].sum() > 0 else float(x["roi"].mean()),
+                "balance_total": float(x["balance_neto"].sum()),
+                "ultimo_cierre": x["fecha_cierre"].max(),
+            })
+        ).reset_index()
+
+        out = out[out["sesiones"] >= int(min_sesiones)].copy()
+        if out.empty:
+            return out
+
+        # Normalizaciones
+        max_abs_balance = max(abs(out["balance_total"]).max(), 1.0)
+        out["balance_norm"] = (out["balance_total"] / max_abs_balance) * 100.0
+        # Consistencia: menor std es mejor -> usamos negativo
+        out["consistency_score"] = -out["roi_std"]
+
+        out["score"] = (
+            out["roi_weighted"] * 0.60 +
+            out["balance_norm"] * 0.25 +
+            out["consistency_score"] * 0.15
+        )
+
+        # Flags de estrategias "perdedoras"
+        out["flag_perdedora"] = (out["roi_avg"] <= -10.0) & (out["sesiones"] >= 5)
+        out = out.sort_values(["flag_perdedora", "score"], ascending=[True, False])
+        return out
+
+    def obtener_resumen_global(self, days: int = 7) -> Dict[str, float | str | None]:
+        """Resumen global (últimos N días) para UI (HU-041)."""
+        query = text("""
+            SELECT
+                SUM(COALESCE(balance_neto, 0)) AS balance_total,
+                AVG(COALESCE(roi, 0)) AS roi_promedio,
+                COUNT(*) AS sesiones
+            FROM tripleta_sesiones
+            WHERE estado = 'FINALIZADA'
+              AND COALESCE(invalida, FALSE) = FALSE
+              AND COALESCE(inversion_total, 0) > 0
+              AND fecha_cierre >= (NOW() - (:days || ' days')::interval)
+        """)
+        with self.engine.connect() as conn:
+            row = conn.execute(query, {"days": int(days)}).fetchone()
+            balance = float(row.balance_total or 0)
+            roi_avg = float(row.roi_promedio or 0)
+            sesiones = int(row.sesiones or 0)
+
+        # Estrategia top actual (si existe)
+        try:
+            ranking = self.obtener_ranking_estrategias(min_sesiones=3)
+            top = None
+            if not ranking.empty:
+                top_row = ranking.iloc[0]
+                top = str(top_row["origen_sexteto"])
+        except Exception:
+            top = None
+
+        return {
+            "days": int(days),
+            "balance_total": round(balance, 2),
+            "roi_promedio": round(roi_avg, 2),
+            "sesiones": sesiones,
+            "estrategia_top": top,
+        }
 
     def obtener_tripletas_sesion(self, sesion_id: int) -> pd.DataFrame:
         """Obtiene las tripletas de una sesión con sus detalles."""
@@ -204,4 +444,27 @@ class GestorTripletas:
                 SET sorteos_analizados = :count, estado = :estado
                 WHERE id = :id
             """), {"count": len(sorteos), "estado": estado_sesion, "id": sesion_id})
+
+            # Persistir métricas al cerrar
+            if estado_sesion == 'FINALIZADA':
+                self._calcular_y_guardar_metricas(conn, sesion_id, fecha_cierre=datetime.now())
+
+    def cerrar_sesion(self, sesion_id: int):
+        """Cierra manualmente una sesión (HU-041) y persiste métricas con el estado real al momento."""
+        # Recalcula progreso (hasta 12 sorteos) y fuerza FINALIZADA
+        with self.engine.connect() as conn:
+            sesion = conn.execute(text("SELECT * FROM tripleta_sesiones WHERE id = :id"), {"id": sesion_id}).fetchone()
+            if not sesion:
+                return
+
+        # Reutilizar lógica existente
+        self.actualizar_progreso(sesion_id)
+
+        with self.engine.begin() as conn:
+            conn.execute(text("""
+                UPDATE tripleta_sesiones
+                SET estado = 'FINALIZADA'
+                WHERE id = :id
+            """), {"id": sesion_id})
+            self._calcular_y_guardar_metricas(conn, sesion_id, fecha_cierre=datetime.now())
 

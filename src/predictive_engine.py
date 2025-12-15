@@ -123,6 +123,11 @@ class PredictiveEngine:
         counts = Counter()
         transitions = Counter()
         last_animal_code = None
+
+        # Terminal state
+        terminal_counts = Counter()  # terminal -> count
+        terminal_transitions = Counter()  # (prev_terminal, curr_terminal) -> count
+        last_terminal = None
         
         dataset_rows = []
         
@@ -160,6 +165,25 @@ class PredictiveEngine:
                     prob_markov = 0.0
                     if last_animal_code and total_trans_from_last > 0:
                         prob_markov = transitions[(last_animal_code, code_candidate)] / total_trans_from_last
+
+                    # --- Terminal features (aprendizaje por terminal) ---
+                    def _terminal_of(code: str):
+                        if code == '00':
+                            return 0
+                        try:
+                            return int(code) % 10
+                        except Exception:
+                            return None
+
+                    cand_terminal = _terminal_of(code_candidate)
+
+                    prob_terminal = 0.0
+                    if last_terminal is not None and cand_terminal is not None:
+                        denom_t = 0
+                        for k in range(10):
+                            denom_t += terminal_transitions[(last_terminal, k)]
+                        if denom_t > 0:
+                            prob_terminal = terminal_transitions[(last_terminal, cand_terminal)] / denom_t
                     
                     # Target
                     is_winner = (code_candidate == current_animal_code)
@@ -174,6 +198,10 @@ class PredictiveEngine:
                         "feature_atraso": atraso,
                         "feature_frecuencia": freq,
                         "feature_markov": float(prob_markov),
+                        "feature_terminal": int(cand_terminal) if cand_terminal is not None else -1,
+                        "feature_terminal_frecuencia": float(terminal_counts.get(cand_terminal, 0)),
+                        "feature_terminal_markov": float(prob_terminal),
+                        "feature_same_terminal_as_last": bool(last_terminal is not None and cand_terminal == last_terminal),
                         "target_resultado": bool(is_winner)
                     })
                     
@@ -183,6 +211,22 @@ class PredictiveEngine:
             if last_animal_code:
                 transitions[(last_animal_code, current_animal_code)] += 1
             last_animal_code = current_animal_code
+
+            # Actualizar terminal state
+            curr_terminal = None
+            if current_animal_code == '00':
+                curr_terminal = 0
+            else:
+                try:
+                    curr_terminal = int(current_animal_code) % 10
+                except Exception:
+                    curr_terminal = None
+
+            if curr_terminal is not None:
+                terminal_counts[curr_terminal] += 1
+                if last_terminal is not None:
+                    terminal_transitions[(last_terminal, curr_terminal)] += 1
+                last_terminal = curr_terminal
 
         # Guardar en DB
         if dataset_rows:
