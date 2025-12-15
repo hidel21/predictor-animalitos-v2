@@ -171,7 +171,7 @@ def render_ml_tab(data, engine):
                                 ),
                             },
                             hide_index=True,
-                            use_container_width=True
+                            width="stretch"
                         )
                             
                     with c2:
@@ -215,7 +215,7 @@ def render_ml_tab(data, engine):
                     
                     st.dataframe(
                         df_display[['fecha', 'hora', 'modelo', 'top1', 'top3', 'numero_real', 'acierto_top1', 'acierto_top3']],
-                        use_container_width=True,
+                        width="stretch",
                         column_config={
                             "top3": st.column_config.ListColumn("Top 3"),
                             "acierto_top1": st.column_config.TextColumn("Hit Top 1"),

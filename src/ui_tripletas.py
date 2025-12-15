@@ -50,7 +50,7 @@ def render_tripletas_tab(engine, recomendador: Recomendador):
                 origen_seleccion = "MANUAL"
 
         elif modo_seleccion == "IA Simple":
-            if st.button("🤖 Obtener Sexteto IA Simple", use_container_width=True):
+            if st.button("🤖 Obtener Sexteto IA Simple", width="stretch"):
                 scores = recomendador.calcular_scores()
                 # Top 6
                 top_6 = sorted(scores, key=lambda x: x.score_total, reverse=True)[:6]
@@ -97,7 +97,7 @@ def render_tripletas_tab(engine, recomendador: Recomendador):
                         st.metric("Score Sexteto", cand['score'])
                         st.write(f"**Números:** {cand['numeros']}")
                         
-                        if st.button(f"Usar {cand['tipo']}", key=f"btn_cand_{idx}", use_container_width=True):
+                        if st.button(f"Usar {cand['tipo']}", key=f"btn_cand_{idx}", width="stretch"):
                             st.session_state['selected_candidate_idx'] = idx
             
             # Si hay uno seleccionado
@@ -160,11 +160,11 @@ def render_tripletas_tab(engine, recomendador: Recomendador):
                 st.dataframe(
                     df_preview.style.map(color_prob, subset=['Probabilidad']), 
                     height=250, 
-                    use_container_width=True
+                    width="stretch"
                 )
                 
                 st.divider()
-                if st.button("✅ Confirmar y Crear Sesión", type="primary", use_container_width=True):
+                if st.button("✅ Confirmar y Crear Sesión", type="primary", width="stretch"):
                     sesion_id = gestor.crear_sesion(hora_inicio, monto, numeros_seleccionados)
                     # Guardar tripletas
                     gestor.agregar_tripletas(sesion_id, [list(p) for p in permutas], es_generada=True)
@@ -322,7 +322,7 @@ def render_tripletas_tab(engine, recomendador: Recomendador):
                         elif val == 'EN CURSO': color = '#fff3cd' # yellow
                         return f'background-color: {color}'
                     
-                    st.dataframe(display_df[['numeros', 'origen', 'estado', 'hits', 'detalles_hits']], use_container_width=True)
+                    st.dataframe(display_df[['numeros', 'origen', 'estado', 'hits', 'detalles_hits']], width="stretch")
                     
                     # Exportar
                     csv = display_df.to_csv(index=False).encode('utf-8')
@@ -343,7 +343,7 @@ def render_tripletas_tab(engine, recomendador: Recomendador):
             hist_display['tasa_exito'] = hist_display['tasa_exito'].apply(lambda x: f"{x:.1f}%")
             hist_display['ganancia'] = hist_display['ganancia'].apply(lambda x: f"{x:,.2f} Bs")
             
-            st.dataframe(hist_display[['id', 'fecha_inicio', 'hora_inicio', 'estado', 'roi', 'tasa_exito', 'ganancia']], use_container_width=True)
+            st.dataframe(hist_display[['id', 'fecha_inicio', 'hora_inicio', 'estado', 'roi', 'tasa_exito', 'ganancia']], width="stretch")
         else:
             st.info("No hay historial disponible.")
 
@@ -379,7 +379,7 @@ def render_tripletas_tab(engine, recomendador: Recomendador):
                     color=alt.Color('zone_score', legend=None),
                     tooltip=['name', 'freq_10', 'days_since']
                 ).interactive()
-                st.altair_chart(chart, use_container_width=True)
+                st.altair_chart(chart, width="stretch")
                 
             with col_charts2:
                 st.markdown("##### 🌡️ Top 15 Más Calientes")
@@ -388,11 +388,11 @@ def render_tripletas_tab(engine, recomendador: Recomendador):
                     y=alt.Y('freq_score', title='Intensidad'),
                     color=alt.Color('freq_score', scale=alt.Scale(scheme='orangered'))
                 )
-                st.altair_chart(chart_bar, use_container_width=True)
+                st.altair_chart(chart_bar, width="stretch")
             
             st.markdown("##### 🏆 Ranking Predictivo Individual")
             st.dataframe(
                 df_feats[['name', 'freq_score', 'atraso_score', 'zone_score']].sort_values('freq_score', ascending=False),
-                use_container_width=True
+                width="stretch"
             )
 

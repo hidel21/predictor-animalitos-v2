@@ -195,7 +195,7 @@ def render_radar_tab(historial: HistorialData):
         name_sec
     )
     
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
     
     # Tabla de Estados
     st.subheader("Estado de Sectores")

@@ -52,7 +52,7 @@ def render_ia_analista_tab(engine):
                         df_recs = pd.DataFrame(recs)
                         # Convertir a string para evitar errores de Arrow con tipos mixtos
                         df_recs = df_recs.astype(str)
-                        st.dataframe(df_recs, use_container_width=True)
+                        st.dataframe(df_recs, width="stretch")
 
     with tab_hist:
         st.subheader("Historial de Recomendaciones")

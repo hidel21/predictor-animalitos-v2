@@ -215,7 +215,7 @@ def render_trazabilidad_tab(historial: HistorialData):
         "Animal": [ANIMALITOS.get(n, "") for n in trace.numeros],
         "Días Atraso": [trace.atrasos_al_momento[n] for n in trace.numeros]
     })
-    st.dataframe(df_atrasos.T, use_container_width=True)
+    st.dataframe(df_atrasos.T, width="stretch")
 
     # Panel 3: Comparación
     if modo_comparar and fecha_comp:

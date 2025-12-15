@@ -167,7 +167,7 @@ class RouletteVisualizer:
 
         with col1:
             fig = self.create_roulette_wheel()
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
 
         # Tabla de Rendimiento A-F
         st.markdown("### Rendimiento por Sectores (A-F)")
@@ -180,7 +180,7 @@ class RouletteVisualizer:
                     lambda x: 'color: purple; font-weight: bold' if isinstance(x, str) and '%' in x and float(x.strip('%')) > 20 else '',
                     subset=['Rendimiento (%)']
                 ),
-                use_container_width=True,
+                width="stretch",
                 hide_index=True
             )
         else:

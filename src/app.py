@@ -45,6 +45,7 @@ from src.ui_ia_patrones import render_ia_patrones_tab
 from src.ui_ml import render_ml_tab
 from src.ui_tripletas import render_tripletas_tab
 from src.ui_ia_analista import render_ia_analista_tab
+from src.ui_terminales import render_terminales_tab
 
 # Configuración de la página
 st.set_page_config(
@@ -489,7 +490,7 @@ def render_backtest_tab(data, start_date, end_date):
                         "Acierto Top 5": f"{metrics['Top5']} ({metrics['Top5_Pct']*100:.1f}%)",
                     })
                     
-                st.dataframe(summary_rows, use_container_width=True)
+                st.dataframe(summary_rows, width="stretch")
                 
                 # Gráficos
                 st.markdown("### 📈 Rendimiento Acumulado")
@@ -775,7 +776,7 @@ def main():
     fecha_fin_str = st.session_state.get('fecha_fin', end_date.strftime("%Y-%m-%d"))
     
     # Pestañas principales
-    tab_resumen, tab0, tab1, tab2, tab3, tab_ml, tab_backtest, tab_tuning, tab_viz, tab4, tab_ruleta, tab_traza, tab_radar, tab5, tab_ia_patrones, tab_tripletas, tab_ia_analista, tab6 = st.tabs([
+    tab_resumen, tab0, tab1, tab2, tab3, tab_ml, tab_backtest, tab_tuning, tab_viz, tab4, tab_ruleta, tab_traza, tab_radar, tab5, tab_ia_patrones, tab_tripletas, tab_ia_analista, tab_terminales, tab6 = st.tabs([
         "📋 Reporte Diario", 
         "📅 Resultados Hoy", 
         "🔥 Calendario de Intensidad", 
@@ -793,6 +794,7 @@ def main():
         "🤖 IA y Patrones",
         "🎲 Tripletas",
         "🤖 IA Analista",
+        "🔢 Terminales",
         "🚀 Recomendaciones"
     ])
 
@@ -1062,7 +1064,7 @@ def main():
             
             st.dataframe(
                 df_atrasos,
-                use_container_width=True,
+                width="stretch",
                 column_config={
                     "Estado": st.column_config.TextColumn(
                         "Estado",
@@ -1222,7 +1224,7 @@ def main():
             st.markdown("#### ⏱️ Timeline de Resultados")
             timeline_chart = viz.get_timeline_chart(limit=limit_viz)
             if timeline_chart:
-                st.altair_chart(timeline_chart, use_container_width=True)
+                st.altair_chart(timeline_chart, width="stretch")
             
             st.divider()
             
@@ -1230,7 +1232,7 @@ def main():
             st.markdown("#### 🔥 Heatmap de Apariciones")
             heatmap_chart = viz.get_heatmap_chart(limit=limit_viz)
             if heatmap_chart:
-                st.altair_chart(heatmap_chart, use_container_width=True)
+                st.altair_chart(heatmap_chart, width="stretch")
 
     with tab4:
         render_tablero_ruleta(data)
@@ -1315,7 +1317,7 @@ def main():
 
                 st.dataframe(
                     df_patterns,
-                    use_container_width=True,
+                    width="stretch",
                     hide_index=True
                 )
                 # st.write("DEBUG: Dataframe Patterns disabled")
@@ -1350,6 +1352,9 @@ def main():
 
     with tab_ia_analista:
         render_ia_analista_tab(engine)
+
+    with tab_terminales:
+        render_terminales_tab(data)
 
     with tab6:
         st.subheader("🚀 Motor de Recomendación Avanzada")
@@ -1484,7 +1489,7 @@ def main():
 
         st.dataframe(
             df_recs,
-            use_container_width=True,
+            width="stretch",
             column_config={
                 "Score Total": st.column_config.ProgressColumn(
                     "Score",
