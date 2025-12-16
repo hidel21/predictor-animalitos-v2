@@ -272,9 +272,19 @@ def render_terminales_tab(data):
                 continue
             siblings_keys = _siblings_for_terminal(row_terminal)
 
-            # Construir HTML de la fila
-            siblings_html: list[str] = []
+            # Reordenar: primero el ganador, luego sus hermanos (mismo terminal)
+            siblings_ordered: list[str] = []
+            if ganador_key and ganador_key in ANIMALITOS:
+                siblings_ordered.append(ganador_key)
             for sib_key in siblings_keys:
+                if sib_key != ganador_key:
+                    siblings_ordered.append(sib_key)
+            if not siblings_ordered:
+                siblings_ordered = siblings_keys
+
+            # Construir HTML de la fila: MISMO diseño, solo reordenar para que el ganador salga primero
+            siblings_html: list[str] = []
+            for sib_key in siblings_ordered:
                 sib_disp = _format_num(sib_key)
                 if sib_key == ganador_key:
                     style = (
