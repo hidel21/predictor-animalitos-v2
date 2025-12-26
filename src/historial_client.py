@@ -205,3 +205,94 @@ class HistorialClient:
         all_dias.sort()
         
         return HistorialData(dias=all_dias, horas=all_horas, tabla=all_tabla)
+
+    def fetch_resultados_envivo(self, url: str) -> HistorialData:
+        """
+        Scrapea la página de resultados en vivo (ej. /resultados/) para obtener los datos del día actual.
+        Útil cuando la página de historial tiene retraso.
+        """
+        import re
+        import unicodedata
+        
+        def normalize(text):
+            return ''.join(c for c in unicodedata.normalize('NFD', text) if unicodedata.category(c) != 'Mn').upper()
+        
+        headers = {"User-Agent": USER_AGENT}
+        try:
+            resp = requests.get(url, headers=headers, timeout=TIMEOUT)
+            resp.raise_for_status()
+        except requests.RequestException as e:
+            raise ConnectionError(f"Error al conectar con Resultados: {e}") from e
+            
+        soup = BeautifulSoup(resp.text, "html.parser")
+        
+        # Fecha de hoy
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        
+        all_tabla = {}
+        all_horas = []
+        
+        # Regex para hora: 08:00 AM, 12:00 PM
+        # Acepta espacios opcionales: 08:00AM o 08:00 AM
+        time_pattern = re.compile(r"(\d{1,2}:\d{2}\s*[AP]M)")
+        
+        # Buscar todos los elementos que contienen texto de hora
+        candidates = soup.find_all(string=time_pattern)
+        
+        for text_node in candidates:
+            match = time_pattern.search(text_node)
+            if not match:
+                continue
+                
+            hora_str = match.group(1)
+            
+            # Normalizar hora
+            try:
+                # Eliminar espacios internos para parsear y luego re-formatear
+                clean_h = hora_str.replace(" ", "").upper()
+                # Insertar espacio antes de AM/PM si falta
+                if "AM" in clean_h: clean_h = clean_h.replace("AM", " AM")
+                if "PM" in clean_h: clean_h = clean_h.replace("PM", " PM")
+                
+                dt = datetime.strptime(clean_h, "%I:%M %p")
+                hora_fmt = dt.strftime("%I:%M %p")
+            except:
+                hora_fmt = hora_str # Fallback
+            
+            # Buscar el animalito en el contexto cercano (padre o abuelo)
+            container = text_node.parent
+            found_animal = None
+            
+            # Intentamos buscar en el contenedor (hasta 4 niveles arriba)
+            for _ in range(4):
+                if not container: break
+                
+                container_text = container.get_text(" ", strip=True).upper()
+                container_norm = normalize(container_text)
+                
+                # Buscar coincidencias con nuestros ANIMALITOS
+                for num, nombre in ANIMALITOS.items():
+                    # Buscamos "Num Nombre" (ej "7 PERICO")
+                    target = f"{num} {normalize(nombre)}"
+                    
+                    # Verificación robusta: que el target esté en el texto
+                    if target in container_norm:
+                        found_animal = nombre
+                        break
+                    
+                    # Fallback: Si el texto es solo "PERICO" (sin numero)
+                    # Pero esto es peligroso si hay texto descriptivo.
+                    # El screenshot muestra "7 Perico", así que la búsqueda con número debería funcionar.
+                    
+                if found_animal:
+                    break
+                
+                container = container.parent
+            
+            if found_animal:
+                if hora_fmt not in all_horas:
+                    all_horas.append(hora_fmt)
+                # Sobrescribir si ya existe (asumimos que el último encontrado es válido o son duplicados)
+                all_tabla[(today_str, hora_fmt)] = found_animal
+                
+        return HistorialData(dias=[today_str], horas=sorted(all_horas), tabla=all_tabla)

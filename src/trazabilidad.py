@@ -211,10 +211,12 @@ def render_trazabilidad_tab(historial: HistorialData):
     # Si son muchos, usar dataframe mejor
     
     df_atrasos = pd.DataFrame({
-        "Número": trace.numeros,
-        "Animal": [ANIMALITOS.get(n, "") for n in trace.numeros],
-        "Días Atraso": [trace.atrasos_al_momento[n] for n in trace.numeros]
+        "Número": [str(n) for n in trace.numeros],
+        "Animal": [str(ANIMALITOS.get(n, "")) for n in trace.numeros],
+        "Días Atraso": [str(trace.atrasos_al_momento[n]) for n in trace.numeros]
     })
+    # Transponer crea columnas mixtas si no forzamos string antes.
+    # Al convertir todo a string arriba, la transpuesta será toda string.
     st.dataframe(df_atrasos.T, width="stretch")
 
     # Panel 3: Comparación

@@ -677,6 +677,18 @@ def main():
                             end_date.strftime("%Y-%m-%d")
                         )
                         
+                        # Intentar complementar con resultados en vivo si el rango incluye hoy
+                        today_str = date.today().strftime("%Y-%m-%d")
+                        if start_date <= date.today() <= end_date:
+                            try:
+                                if 'resultados' in loteria_config:
+                                    live_data = client.fetch_resultados_envivo(loteria_config['resultados'])
+                                    merged_count = data.merge(live_data)
+                                    if merged_count > 0:
+                                        st.toast(f"Se integraron {merged_count} resultados en vivo.", icon="📡")
+                            except Exception as e:
+                                logger.warning(f"No se pudieron obtener resultados en vivo: {e}")
+                        
                         # Guardar en BD (HU-028)
                         if engine:
                             try:
@@ -720,8 +732,17 @@ def main():
                     client = HistorialClient(base_url=loteria_config['historial'])
                     today_str = date.today().strftime("%Y-%m-%d")
                     
-                    # Descargar solo hoy
-                    new_data = client.fetch_historial(today_str, today_str)
+                    # Intentar descargar desde la página de RESULTADOS en vivo primero (más actualizada)
+                    new_data = None
+                    try:
+                        if 'resultados' in loteria_config:
+                            new_data = client.fetch_resultados_envivo(loteria_config['resultados'])
+                    except Exception as e_live:
+                        print(f"⚠️ Error scraping en vivo: {e_live}")
+                    
+                    # Si falla o no trae nada, fallback al historial
+                    if not new_data or new_data.total_sorteos == 0:
+                        new_data = client.fetch_historial(today_str, today_str)
                     
                     # Guardar en BD (HU-028)
                     if engine and new_data.total_sorteos > 0:
@@ -761,6 +782,10 @@ def main():
                         # Esto requiere saber cuál fue el último sorteo añadido.
                         # Por simplicidad, el usuario verá el resultado en la UI.
                         # Para cerrar el ciclo ML completo, se necesitaría un proceso más complejo aquí.
+                        
+                        # Forzar rerun para actualizar UI inmediatamente
+                        time.sleep(0.5)
+                        st.rerun()
                     
                 except Exception as e:
                     status_placeholder.empty()
@@ -1071,11 +1096,29 @@ def main():
             # Mostrar como tarjetas o tabla
             cols = st.columns(4)
             for idx, res in enumerate(resultados_hoy):
-                animal_full = res["Animalito"] # "24 Iguana"
+                animal_full = res["Animalito"] # "24 Iguana" o solo "Iguana"
+                
                 # Separar numero y nombre si es posible
                 parts = animal_full.split()
-                num = parts[0] if parts and parts[0].isdigit() else "?"
-                nombre = " ".join(parts[1:]) if len(parts) > 1 else animal_full
+                num = "?"
+                nombre = animal_full
+
+                if parts and parts[0].isdigit():
+                    num = parts[0]
+                    nombre = " ".join(parts[1:])
+                else:
+                    # Intentar buscar el número por el nombre en ANIMALITOS
+                    # animal_full es solo el nombre (ej. "Perico")
+                    import unicodedata
+                    def normalize(text):
+                        return ''.join(c for c in unicodedata.normalize('NFD', text) if unicodedata.category(c) != 'Mn').lower()
+
+                    for k, v in ANIMALITOS.items():
+                        # Comparación insensible a mayúsculas/tildes básica
+                        if normalize(v) == normalize(animal_full):
+                            num = k
+                            nombre = v
+                            break
                 
                 with cols[idx % 4]:
                     st.metric(label=res["Hora"], value=num, delta=nombre)
