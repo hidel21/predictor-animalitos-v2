@@ -8,16 +8,40 @@ from typing import Dict, Any, List, Optional
 import re
 
 from src.ai_client import AIClient
+from src.gemini_client import GeminiClient
 from src.constantes import ANIMALITOS
 
 class IAService:
-    def __init__(self, engine: Engine):
+    def __init__(self, engine: Engine, forced_provider: str = None):
         self.engine = engine
         self.client = None
-        try:
-            self.client = AIClient()
-        except Exception as e:
-            print(f"Advertencia: No se pudo inicializar AIClient: {e}")
+        self.provider = None
+
+        # Permitir forzar proveedor desde la UI
+        if forced_provider == "gemini":
+            try:
+                self.client = GeminiClient()
+                self.provider = "gemini"
+            except Exception as e_gemini:
+                print(f"Advertencia: No se pudo inicializar GeminiClient: {e_gemini}")
+        elif forced_provider == "openai":
+            try:
+                self.client = AIClient()
+                self.provider = "openai"
+            except Exception as e_openai:
+                print(f"Advertencia: No se pudo inicializar AIClient: {e_openai}")
+        else:
+            # Auto: Gemini preferido, fallback a OpenAI
+            try:
+                self.client = GeminiClient()
+                self.provider = "gemini"
+            except Exception as e_gemini:
+                print(f"Advertencia: No se pudo inicializar GeminiClient: {e_gemini}")
+                try:
+                    self.client = AIClient()
+                    self.provider = "openai"
+                except Exception as e_openai:
+                    print(f"Advertencia: No se pudo inicializar AIClient: {e_openai}")
 
     def gather_context(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """

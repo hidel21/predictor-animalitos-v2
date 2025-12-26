@@ -12,13 +12,14 @@ from src.predictive_engine import PredictiveEngine
 import altair as alt
 
 def render_tripletas_tab(engine, recomendador: Recomendador):
-    st.header("🧩 Gestión de Tripletas - La Granjita")
+    selected_loteria = st.session_state.get('selected_loteria', 'La Granjita')
+    st.header(f"🧩 Gestión de Tripletas - {selected_loteria}")
     
     gestor = GestorTripletas(engine)
 
     # --- HU-041: Panel superior de rendimiento real ---
     try:
-        resumen_7d = gestor.obtener_resumen_global(days=7)
+        resumen_7d = gestor.obtener_resumen_global(days=7, loteria=selected_loteria)
         cA, cB, cC = st.columns(3)
         cA.metric("ROI (últimos 7 días)", f"{resumen_7d['roi_promedio']:.2f}%")
         cB.metric("Balance (últimos 7 días)", f"{resumen_7d['balance_total']:,.2f} Bs")
@@ -39,16 +40,16 @@ def render_tripletas_tab(engine, recomendador: Recomendador):
         with c3:
             st.info("El seguimiento durará 12 sorteos consecutivos desde la hora seleccionada.")
 
-    tab_gen, tab_manual, tab_seguimiento, tab_predictivo = st.tabs(["🎲 Generar (Sexteto)", "📝 Registro Manual", "📊 Seguimiento Activo", "🧠 Análisis Predictivo"])
+    tab_gen, tab_manual, tab_seguimiento, tab_predictivo = st.tabs(["🎲 Generar (Base)", "📝 Registro Manual", "📊 Seguimiento Activo", "🧠 Análisis Predictivo"])
 
     # --- TAB 1: Generación Automática ---
     with tab_gen:
-        st.subheader("Generar Tripletas desde Sexteto Base")
+        st.subheader("Generar Tripletas desde Conjunto Base")
 
         # --- HU-041: Estrategia recomendada por desempeño ---
         ranking = None
         try:
-            ranking = gestor.obtener_ranking_estrategias(min_sesiones=3)
+            ranking = gestor.obtener_ranking_estrategias(min_sesiones=3, loteria=selected_loteria)
         except Exception:
             ranking = None
 
@@ -80,10 +81,10 @@ def render_tripletas_tab(engine, recomendador: Recomendador):
         origen_seleccion = "MANUAL"
         
         if modo_seleccion == "Manual":
-            # Multiselect limitado a 6
+            # Multiselect limitado a 12
             opts = [f"{k} - {v}" for k, v in ANIMALITOS.items()]
-            sel = st.multiselect("Elige 6 números", opts, max_selections=6)
-            if len(sel) == 6:
+            sel = st.multiselect("Elige entre 4 y 12 números", opts, max_selections=12)
+            if 4 <= len(sel) <= 12:
                 numeros_seleccionados = [int(s.split(" - ")[0]) for s in sel]
                 origen_seleccion = "MANUAL"
 
@@ -116,11 +117,13 @@ def render_tripletas_tab(engine, recomendador: Recomendador):
 
         elif modo_seleccion == "IA + Motor Predictivo (Recomendado)":
             pred_engine = PredictiveEngine(recomendador.data)
-            candidates = pred_engine.generate_candidate_sextets()
+            # Pasar hora_inicio para estrategia INTRA-DIA
+            candidates = pred_engine.generate_candidate_sextets(target_time=hora_inicio)
             
             st.info("Selecciona una de las estrategias sugeridas por el Motor Predictivo:")
             
-            cols = st.columns(3)
+            # Ajustar columnas dinámicamente según cantidad de candidatos
+            cols = st.columns(len(candidates))
             selected_candidate = None
             
             # Usar session state para recordar cuál seleccionó el usuario
@@ -171,20 +174,20 @@ def render_tripletas_tab(engine, recomendador: Recomendador):
                     opts = [f"{k} - {v}" for k, v in ANIMALITOS.items()]
                     default_opts = [f"{n} - {ANIMALITOS.get(str(n), '')}" for n in numeros_seleccionados]
                     
-                    sel_ajuste = st.multiselect("Modificar números seleccionados", opts, default=default_opts, max_selections=6)
+                    sel_ajuste = st.multiselect("Modificar números seleccionados", opts, default=default_opts, max_selections=12)
                     
-                    if len(sel_ajuste) == 6:
+                    if 4 <= len(sel_ajuste) <= 12:
                         nuevos_nums = [int(s.split(" - ")[0]) for s in sel_ajuste]
                         if set(nuevos_nums) != set(numeros_seleccionados):
                             numeros_seleccionados = nuevos_nums
                             origen_seleccion = f"IA_PREDICTIVO_{cand['tipo']}_AJUSTADO"
-                            st.warning("Has modificado el sexteto original sugerido.")
+                            st.warning("Has modificado el conjunto original sugerido.")
 
         st.divider()
         
         st.markdown("#### 2. Vista Previa y Confirmación")
         
-        if len(numeros_seleccionados) == 6:
+        if 4 <= len(numeros_seleccionados) <= 12:
             permutas = gestor.generar_permutas(numeros_seleccionados)
             
             # --- Motor Predictivo ---
@@ -200,12 +203,19 @@ def render_tripletas_tab(engine, recomendador: Recomendador):
             
             df_preview = pd.DataFrame(scored_data).sort_values("Score", ascending=False)
             
+            # Control de cantidad
+            limit_tripletas = st.number_input("Cantidad de Tripletas a Generar", min_value=1, max_value=len(permutas), value=min(20, len(permutas)))
+            
+            # Slice
+            df_preview_sliced = df_preview.head(limit_tripletas)
+            permutas_finales = df_preview_sliced[['N1', 'N2', 'N3']].values.tolist()
+            
             with st.container(border=True):
-                st.info(f"Se generarán **{len(permutas)} tripletas** combinando los 6 números.")
+                st.info(f"Se generarán **{len(permutas_finales)} tripletas** (Top {limit_tripletas} de {len(permutas)} posibles).")
                 
                 c_cost1, c_cost2 = st.columns(2)
-                c_cost1.metric("Total Tripletas", len(permutas))
-                c_cost2.metric("Costo Total", f"{len(permutas) * monto:,.2f} Bs")
+                c_cost1.metric("Total Tripletas", len(permutas_finales))
+                c_cost2.metric("Costo Total", f"{len(permutas_finales) * monto:,.2f} Bs")
                 
                 # Colorear según probabilidad
                 def color_prob(val):
@@ -215,7 +225,7 @@ def render_tripletas_tab(engine, recomendador: Recomendador):
                     return f'color: {color}'
 
                 st.dataframe(
-                    df_preview.style.map(color_prob, subset=['Probabilidad']), 
+                    df_preview_sliced.style.map(color_prob, subset=['Probabilidad']), 
                     height=250, 
                     width="stretch"
                 )
@@ -223,9 +233,10 @@ def render_tripletas_tab(engine, recomendador: Recomendador):
                 st.divider()
                 if st.button("✅ Confirmar y Crear Sesión", type="primary", width="stretch"):
                     try:
-                        sesion_id = gestor.crear_sesion(hora_inicio, monto, numeros_seleccionados)
+                        loteria = st.session_state.get('selected_loteria', 'La Granjita')
+                        sesion_id = gestor.crear_sesion(hora_inicio, monto, numeros_seleccionados, loteria=loteria)
                         # Guardar tripletas
-                        gestor.agregar_tripletas(sesion_id, [list(p) for p in permutas], es_generada=True)
+                        gestor.agregar_tripletas(sesion_id, [list(p) for p in permutas_finales], es_generada=True)
                     except Exception as e:
                         st.error(f"No se pudo crear la sesión: {e}")
                         st.stop()
@@ -252,7 +263,7 @@ def render_tripletas_tab(engine, recomendador: Recomendador):
             if modo_seleccion == "IA + Motor Predictivo (Recomendado)" and not numeros_seleccionados:
                 st.info("👆 Selecciona una estrategia arriba para continuar.")
             else:
-                st.warning("Debes tener exactamente 6 números seleccionados para ver la vista previa.")
+                st.warning("Debes tener entre 4 y 12 números seleccionados para ver la vista previa.")
                 st.caption("Selecciona 'Manual' o 'Sugerido por IA' arriba.")
 
     # --- TAB 2: Registro Manual ---
@@ -260,16 +271,16 @@ def render_tripletas_tab(engine, recomendador: Recomendador):
         st.subheader("Pegar Tripletas Manualmente")
         st.caption("Formato: 3 números separados por guión, barra o espacio. Una tripleta por línea.")
 
-        st.markdown("#### Sexteto base (obligatorio)")
+        st.markdown("#### Conjunto base (obligatorio)")
         opts = [f"{k} - {v}" for k, v in ANIMALITOS.items()]
         sel_base_manual = st.multiselect(
-            "Selecciona exactamente 6 números para el sexteto base",
+            "Selecciona entre 4 y 12 números para el conjunto base",
             opts,
-            max_selections=6,
+            max_selections=12,
             key="manual_sexteto_base",
         )
         numeros_base_manual: list[int] = []
-        if len(sel_base_manual) == 6:
+        if 4 <= len(sel_base_manual) <= 12:
             numeros_base_manual = [int(s.split(" - ")[0]) for s in sel_base_manual]
 
         # Limpieza segura del input: debe ocurrir ANTES de crear el widget con esa key.
@@ -302,7 +313,8 @@ def render_tripletas_tab(engine, recomendador: Recomendador):
                 
                 if st.button("💾 Guardar Sesión Manual"):
                     try:
-                        sesion_id = gestor.crear_sesion(hora_inicio, monto, numeros_base_manual)
+                        loteria = st.session_state.get('selected_loteria', 'La Granjita')
+                        sesion_id = gestor.crear_sesion(hora_inicio, monto, numeros_base_manual, loteria=loteria)
                         gestor.agregar_tripletas(sesion_id, tripletas_validas, es_generada=False)
                         st.success(f"Sesión Manual #{sesion_id} guardada!")
                     except Exception as e:
@@ -322,19 +334,20 @@ def render_tripletas_tab(engine, recomendador: Recomendador):
         st.subheader("📊 Sesiones Activas")
         
         if st.button("🔄 Actualizar Progreso de Todas las Sesiones"):
-            sesiones = gestor.obtener_sesiones_activas()
+            sesiones = gestor.obtener_sesiones_activas(loteria=selected_loteria)
             for _, row in sesiones.iterrows():
                 gestor.actualizar_progreso(row['id'])
             st.success("Progreso actualizado.")
             st.rerun()
             
-        sesiones = gestor.obtener_sesiones_activas()
+        sesiones = gestor.obtener_sesiones_activas(loteria=selected_loteria)
         
         if sesiones.empty:
-            st.info("No hay sesiones activas.")
+            st.info(f"No hay sesiones activas para {selected_loteria}.")
         else:
             for _, row in sesiones.iterrows():
-                with st.expander(f"Sesión #{row['id']} - Inicio: {row['hora_inicio']} - Estado: {row['estado']} ({row['sorteos_analizados']}/12)", expanded=False):
+                loteria_sesion = row.get('loteria', 'La Granjita')
+                with st.expander(f"Sesión #{row['id']} - {loteria_sesion} - Inicio: {row['hora_inicio']} - Estado: {row['estado']} ({row['sorteos_analizados']}/12)", expanded=False):
                     # Detalles
                     tripletas_df = gestor.obtener_tripletas_sesion(row['id'])
                     
@@ -348,7 +361,7 @@ def render_tripletas_tab(engine, recomendador: Recomendador):
                         
                     tipo_sesion = "MIXTA" if (num_ia > 0 and num_manual > 0) else ("IA" if num_ia > 0 else "MANUAL")
                     
-                    st.caption(f"📅 {row['fecha_inicio']} | ⏰ {row['hora_inicio']} | 🏷️ Tipo: **{tipo_sesion}** (IA: {num_ia} | Manual: {num_manual})")
+                    st.caption(f"📅 {row['fecha_inicio']} | ⏰ {row['hora_inicio']} | 🎰 {loteria_sesion} | 🏷️ Tipo: **{tipo_sesion}** (IA: {num_ia} | Manual: {num_manual})")
                     
                     # KPIs
                     total = len(tripletas_df)
@@ -384,7 +397,21 @@ def render_tripletas_tab(engine, recomendador: Recomendador):
                     # Tabla detallada
                     # Formatear columnas para display
                     display_df = tripletas_df.copy()
-                    display_df['numeros'] = display_df['numeros'].apply(lambda x: f"{x[0]}-{x[1]}-{x[2]}")
+                    
+                    def format_numeros(x):
+                        try:
+                            if isinstance(x, (list, tuple)):
+                                return "-".join(map(str, x))
+                            return str(x)
+                        except:
+                            return str(x)
+
+                    display_df['numeros'] = display_df['numeros'].apply(format_numeros).astype(str)
+                    
+                    # Convertir detalles_hits a string para evitar problemas con PyArrow
+                    if 'detalles_hits' in display_df.columns:
+                        display_df['detalles_hits'] = display_df['detalles_hits'].astype(str)
+
                     # Manejar columna es_generada si existe, sino default True
                     if 'es_generada' in display_df.columns:
                         display_df['origen'] = display_df['es_generada'].apply(lambda x: 'IA' if x else 'Manual')
@@ -422,16 +449,21 @@ def render_tripletas_tab(engine, recomendador: Recomendador):
 
         st.divider()
         st.subheader("📜 Historial Reciente")
-        historial = gestor.obtener_historial_sesiones(limit=5)
+        historial = gestor.obtener_historial_sesiones(limit=5, loteria=selected_loteria)
         if not historial.empty:
             hist_display = historial.copy()
             hist_display['roi'] = hist_display['roi'].fillna(0).apply(lambda x: f"{float(x):.2f}%")
             hist_display['balance_neto'] = hist_display['balance_neto'].fillna(0).apply(lambda x: f"{float(x):,.2f} Bs")
             hist_display['tasa_exito'] = hist_display['tasa_exito'].fillna(0).apply(lambda x: f"{float(x):.1f}%")
+            # Ensure list columns are strings and IDs are ints
+            if 'origen_sexteto' in hist_display.columns:
+                hist_display['origen_sexteto'] = hist_display['origen_sexteto'].astype(str)
+            if 'id' in hist_display.columns:
+                hist_display['id'] = hist_display['id'].astype(str)
             
             st.dataframe(
                 hist_display[[
-                    'id', 'fecha_inicio', 'hora_inicio', 'estado', 'origen_sexteto',
+                    'id', 'fecha_inicio', 'hora_inicio', 'loteria', 'estado', 'origen_sexteto',
                     'tripletas_total', 'aciertos', 'tasa_exito',
                     'balance_neto', 'roi', 'fecha_cierre', 'invalida'
                 ]],
@@ -443,10 +475,13 @@ def render_tripletas_tab(engine, recomendador: Recomendador):
         st.divider()
         st.subheader("📈 Reporte por estrategia (HU-041)")
         try:
-            rep = gestor.obtener_reporte_estrategias(days=7)
+            rep = gestor.obtener_reporte_estrategias(days=7, loteria=selected_loteria)
             if rep.empty:
                 st.info("No hay datos suficientes para el reporte por estrategia.")
             else:
+                # Ensure list columns are strings
+                if 'origen_sexteto' in rep.columns:
+                    rep['origen_sexteto'] = rep['origen_sexteto'].astype(str)
                 st.dataframe(rep, width="stretch")
         except Exception as e:
             st.error(f"Error generando reporte por estrategia: {e}")

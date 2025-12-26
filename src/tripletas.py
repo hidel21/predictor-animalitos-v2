@@ -9,27 +9,27 @@ import json
 
 
 def validar_numeros_base(numeros_base: Optional[List[int]]) -> List[int]:
-    """Valida el sexteto base según HU-041.
+    """Valida el conjunto base de números (HU-041).
 
     Reglas:
-    - Debe existir y tener exactamente 6 números
+    - Debe existir y tener entre 4 y 12 números
     - Sin duplicados
     - Rango 0–36
     """
     if numeros_base is None:
-        raise ValueError("El sexteto (numeros_base) es obligatorio.")
-    if len(numeros_base) != 6:
-        raise ValueError("El sexteto debe tener exactamente 6 números.")
+        raise ValueError("El conjunto base (numeros_base) es obligatorio.")
+    if not (4 <= len(numeros_base) <= 12):
+        raise ValueError("El conjunto base debe tener entre 4 y 12 números.")
 
     try:
         nums = [int(x) for x in numeros_base]
     except Exception:
-        raise ValueError("El sexteto contiene valores no numéricos.")
+        raise ValueError("El conjunto base contiene valores no numéricos.")
 
     if any(n < 0 or n > 36 for n in nums):
-        raise ValueError("El sexteto contiene números fuera de rango (0–36).")
-    if len(set(nums)) != 6:
-        raise ValueError("El sexteto no puede contener números repetidos.")
+        raise ValueError("El conjunto base contiene números fuera de rango (0–36).")
+    if len(set(nums)) != len(nums):
+        raise ValueError("El conjunto base no puede contener números repetidos.")
     return nums
 
 
@@ -67,11 +67,11 @@ class GestorTripletas:
         if not sesion:
             return
 
-        # Total de tripletas en sesión y aciertos (hits > 0)
+        # Total de tripletas en sesión y aciertos (estado = 'GANADORA')
         agg = conn.execute(text("""
             SELECT
                 COUNT(*) AS tripletas_total,
-                SUM(CASE WHEN hits > 0 THEN 1 ELSE 0 END) AS aciertos
+                SUM(CASE WHEN estado = 'GANADORA' THEN 1 ELSE 0 END) AS aciertos
             FROM tripletas
             WHERE sesion_id = :id
         """), {"id": sesion_id}).fetchone()
@@ -151,7 +151,7 @@ class GestorTripletas:
             return []
         return list(itertools.combinations(numeros, 3))
 
-    def crear_sesion(self, hora_inicio: time, monto: float, numeros_base: Optional[List[int]] = None) -> int:
+    def crear_sesion(self, hora_inicio: time, monto: float, numeros_base: Optional[List[int]] = None, loteria: str = 'La Granjita') -> int:
         """Crea una nueva sesión de tripletas y retorna su ID."""
 
         # Validación bloqueante HU-041
@@ -160,15 +160,16 @@ class GestorTripletas:
             raise ValueError("El monto_unitario debe ser mayor a 0.")
 
         query = text("""
-            INSERT INTO tripleta_sesiones (hora_inicio, monto_unitario, numeros_base, fecha_inicio)
-            VALUES (:hora, :monto, :base, CURRENT_DATE)
+            INSERT INTO tripleta_sesiones (hora_inicio, monto_unitario, numeros_base, fecha_inicio, loteria)
+            VALUES (:hora, :monto, :base, CURRENT_DATE, :loteria)
             RETURNING id
         """)
         with self.engine.begin() as conn:
             result = conn.execute(query, {
                 "hora": hora_inicio,
                 "monto": monto,
-                "base": base_validada
+                "base": base_validada,
+                "loteria": loteria
             })
             return result.scalar()
 
@@ -186,23 +187,31 @@ class GestorTripletas:
             for t in tripletas:
                 conn.execute(query, {"sesion_id": sesion_id, "numeros": t, "es_generada": es_generada})
 
-    def obtener_sesiones_activas(self) -> pd.DataFrame:
+    def obtener_sesiones_activas(self, loteria: Optional[str] = None) -> pd.DataFrame:
         """Obtiene las sesiones que aún no han finalizado (menos de 12 sorteos analizados)."""
-        query = text("""
+        sql = """
             SELECT * FROM tripleta_sesiones 
             WHERE estado = 'ACTIVA' 
-            ORDER BY fecha_creacion DESC
-        """)
+        """
+        params = {}
+        if loteria:
+            sql += " AND loteria = :loteria"
+            params["loteria"] = loteria
+            
+        sql += " ORDER BY fecha_creacion DESC"
+        
+        query = text(sql)
         with self.engine.connect() as conn:
-            return pd.read_sql(query, conn)
+            return pd.read_sql(query, conn, params=params)
 
-    def obtener_historial_sesiones(self, limit: int = 10) -> pd.DataFrame:
+    def obtener_historial_sesiones(self, limit: int = 10, loteria: Optional[str] = None) -> pd.DataFrame:
         """Obtiene las últimas N sesiones con métricas persistidas (HU-041)."""
-        query = text("""
+        sql = """
             SELECT
                 s.id,
                 s.fecha_inicio,
                 s.hora_inicio,
+                s.loteria,
                 s.estado,
                 s.sorteos_analizados,
                 s.origen_sexteto,
@@ -216,11 +225,18 @@ class GestorTripletas:
                 s.invalida,
                 s.advertencia
             FROM tripleta_sesiones s
-            ORDER BY s.id DESC
-            LIMIT :limit
-        """)
+            WHERE 1=1
+        """
+        params = {"limit": limit}
+        if loteria:
+            sql += " AND s.loteria = :loteria"
+            params["loteria"] = loteria
+            
+        sql += " ORDER BY s.id DESC LIMIT :limit"
+        
+        query = text(sql)
         with self.engine.connect() as conn:
-            df = pd.read_sql(query, conn, params={"limit": limit})
+            df = pd.read_sql(query, conn, params=params)
 
         # Derivados de display (sin recalcular ROI)
         if not df.empty:
@@ -231,9 +247,9 @@ class GestorTripletas:
             )
         return df
 
-    def obtener_reporte_estrategias(self, days: int = 7) -> pd.DataFrame:
+    def obtener_reporte_estrategias(self, days: int = 7, loteria: Optional[str] = None) -> pd.DataFrame:
         """Reporte por estrategia/origen (HU-041)."""
-        query = text("""
+        sql = """
             SELECT
               origen_sexteto,
               COUNT(*) AS sesiones,
@@ -245,18 +261,27 @@ class GestorTripletas:
             WHERE estado = 'FINALIZADA'
               AND COALESCE(invalida, FALSE) = FALSE
               AND COALESCE(inversion_total, 0) > 0
+        """
+        params = {"days": int(days)}
+        if loteria:
+            sql += " AND loteria = :loteria"
+            params["loteria"] = loteria
+            
+        sql += """
             GROUP BY origen_sexteto
             ORDER BY roi_promedio DESC
-        """)
+        """
+        
+        query = text(sql)
         with self.engine.connect() as conn:
-            return pd.read_sql(query, conn, params={"days": int(days)})
+            return pd.read_sql(query, conn, params=params)
 
-    def obtener_ranking_estrategias(self, min_sesiones: int = 3) -> pd.DataFrame:
+    def obtener_ranking_estrategias(self, min_sesiones: int = 3, loteria: Optional[str] = None) -> pd.DataFrame:
         """Construye ranking ponderado (HU-041).
 
         Score = 60% ROI ponderado por recencia + 25% balance total (normalizado) + 15% consistencia.
         """
-        query = text("""
+        sql = """
             SELECT
                 id, origen_sexteto, fecha_cierre, roi, balance_neto
             FROM tripleta_sesiones
@@ -264,9 +289,15 @@ class GestorTripletas:
               AND COALESCE(invalida, FALSE) = FALSE
               AND COALESCE(inversion_total, 0) > 0
               AND fecha_cierre IS NOT NULL
-        """)
+        """
+        params = {}
+        if loteria:
+            sql += " AND loteria = :loteria"
+            params["loteria"] = loteria
+            
+        query = text(sql)
         with self.engine.connect() as conn:
-            df = pd.read_sql(query, conn)
+            df = pd.read_sql(query, conn, params=params)
 
         if df.empty:
             return df
@@ -316,9 +347,9 @@ class GestorTripletas:
         out = out.sort_values(["flag_perdedora", "score"], ascending=[True, False])
         return out
 
-    def obtener_resumen_global(self, days: int = 7) -> Dict[str, float | str | None]:
+    def obtener_resumen_global(self, days: int = 7, loteria: Optional[str] = None) -> Dict[str, float | str | None]:
         """Resumen global (últimos N días) para UI (HU-041)."""
-        query = text("""
+        sql = """
             SELECT
                 SUM(COALESCE(balance_neto, 0)) AS balance_total,
                 AVG(COALESCE(roi, 0)) AS roi_promedio,
@@ -328,16 +359,22 @@ class GestorTripletas:
               AND COALESCE(invalida, FALSE) = FALSE
               AND COALESCE(inversion_total, 0) > 0
               AND fecha_cierre >= (NOW() - (:days || ' days')::interval)
-        """)
+        """
+        params = {"days": int(days)}
+        if loteria:
+            sql += " AND loteria = :loteria"
+            params["loteria"] = loteria
+            
+        query = text(sql)
         with self.engine.connect() as conn:
-            row = conn.execute(query, {"days": int(days)}).fetchone()
+            row = conn.execute(query, params).fetchone()
             balance = float(row.balance_total or 0)
             roi_avg = float(row.roi_promedio or 0)
             sesiones = int(row.sesiones or 0)
 
         # Estrategia top actual (si existe)
         try:
-            ranking = self.obtener_ranking_estrategias(min_sesiones=3)
+            ranking = self.obtener_ranking_estrategias(min_sesiones=3, loteria=loteria)
             top = None
             if not ranking.empty:
                 top_row = ranking.iloc[0]
@@ -374,6 +411,7 @@ class GestorTripletas:
 
         fecha_inicio = sesion.fecha_inicio
         hora_inicio = sesion.hora_inicio
+        loteria = getattr(sesion, 'loteria', 'La Granjita')
         
         # 2. Obtener sorteos válidos (desde hora_inicio, max 12 sorteos)
         # Nota: Esto asume que los sorteos están en la tabla 'sorteos' y tienen 'numero_real' != -1
@@ -382,12 +420,13 @@ class GestorTripletas:
             FROM sorteos 
             WHERE (fecha > :fecha OR (fecha = :fecha AND hora >= :hora))
               AND numero_real != -1
+              AND (loteria = :loteria OR loteria IS NULL)
             ORDER BY fecha ASC, hora ASC
             LIMIT 12
         """)
         
         with self.engine.connect() as conn:
-            sorteos = conn.execute(query_sorteos, {"fecha": fecha_inicio, "hora": hora_inicio}).fetchall()
+            sorteos = conn.execute(query_sorteos, {"fecha": fecha_inicio, "hora": hora_inicio, "loteria": loteria}).fetchall()
         
         if not sorteos:
             return
@@ -401,11 +440,13 @@ class GestorTripletas:
         for _, row in tripletas_df.iterrows():
             numeros_t = set(row['numeros']) # {n1, n2, n3}
             hits = 0
+            numeros_acertados = set()
             detalles = []
             
             for s in sorteos:
                 if s.numero_real in numeros_t:
                     hits += 1
+                    numeros_acertados.add(s.numero_real)
                     detalles.append({
                         "sorteo_id": s.id,
                         "fecha": str(s.fecha),
@@ -413,10 +454,11 @@ class GestorTripletas:
                         "numero": s.numero_real
                     })
             
-            estado = "GANADORA" if hits > 0 else "PENDIENTE"
-            if len(sorteos) >= 12 and hits == 0:
+            if len(numeros_acertados) == 3:
+                estado = "GANADORA"
+            elif len(sorteos) >= 12:
                 estado = "PERDIDA"
-            elif len(sorteos) < 12 and hits == 0:
+            else:
                 estado = "EN CURSO"
                 
             updates.append({

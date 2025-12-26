@@ -5,16 +5,27 @@ from src.tripletas import validar_numeros_base, calcular_metricas_sesion
 
 class TestTripletasHU041(unittest.TestCase):
     def test_validar_numeros_base_ok(self):
+        # 6 números
         nums = validar_numeros_base([0, 1, 2, 3, 4, 36])
         self.assertEqual(len(nums), 6)
+        # 4 números
+        nums4 = validar_numeros_base([0, 1, 2, 3])
+        self.assertEqual(len(nums4), 4)
+        # 5 números
+        nums5 = validar_numeros_base([0, 1, 2, 3, 4])
+        self.assertEqual(len(nums5), 5)
 
     def test_validar_numeros_base_none(self):
         with self.assertRaises(ValueError):
             validar_numeros_base(None)
 
     def test_validar_numeros_base_wrong_len(self):
+        # Menos de 4
         with self.assertRaises(ValueError):
             validar_numeros_base([1, 2, 3])
+        # Más de 6
+        with self.assertRaises(ValueError):
+            validar_numeros_base([1, 2, 3, 4, 5, 6, 7])
 
     def test_validar_numeros_base_duplicates(self):
         with self.assertRaises(ValueError):

@@ -384,9 +384,11 @@ class PredictiveEngine:
         
         return round(final_score, 2), features_summary
 
-    def generate_candidate_sextets(self):
+    def generate_candidate_sextets(self, target_time=None):
         """
-        Genera 3 sextetos candidatos basados en diferentes estrategias.
+        Genera sextetos candidatos basados en diferentes estrategias.
+        Args:
+            target_time (datetime.time, optional): Hora objetivo para la predicción.
         """
         if not self.number_features:
             return []
@@ -494,6 +496,70 @@ class PredictiveEngine:
             "score": round(score_agg, 2),
             "desc": "Combina los más atrasados con los más probables según Markov (último sorteo)."
         })
+
+        # 4. Estrategia INTRA-DIA (Flujo del Día + Hora)
+        # Si se especifica hora, busca patrones horarios y flujo del día actual
+        if target_time:
+            sexteto_intra = []
+            desc_intra = f"Optimizado para las {target_time.strftime('%I:%M %p')} usando flujo del día."
+            
+            # A. Análisis de Hora Específica (Qué sale a esta hora históricamente)
+            # Esto requeriría un análisis rápido del historial para target_time
+            
+            # Contar frecuencias a esta hora
+            hour_counts = Counter()
+            for d in self.data.dias:
+                # Buscar coincidencia aproximada de hora
+                for h_str in self.data.horas:
+                    # Parsear h_str
+                    try:
+                        h_dt = datetime.strptime(h_str, "%I:%M %p").time()
+                        if h_dt.hour == target_time.hour:
+                            val = self.data.tabla.get((d, h_str))
+                            if val:
+                                # Extraer nombre animal
+                                for k, v in ANIMALITOS.items():
+                                    if val.startswith(f"{k} ") or val == k or v in val:
+                                        hour_counts[k] += 1
+                                        break
+                    except:
+                        pass
+            
+            top_hour = [int(k) for k, v in hour_counts.most_common(3)]
+            sexteto_intra.extend(top_hour)
+            
+            # B. Flujo del Día (Markov desde el último resultado de HOY)
+            # Ya tenemos markov_candidates calculado arriba desde last_animal
+            # Si last_date es HOY, entonces markov_candidates es muy relevante para el flujo del día
+            today_str = datetime.now().strftime("%Y-%m-%d")
+            if sorted_dates and sorted_dates[-1] == today_str:
+                # Estamos en el día actual
+                for m in markov_candidates:
+                    if m not in sexteto_intra and len(sexteto_intra) < 6:
+                        sexteto_intra.append(m)
+            else:
+                # Si no hay datos de hoy, usamos los más calientes generales
+                for n in sorted_hot:
+                    if n['code'] not in sexteto_intra and len(sexteto_intra) < 6:
+                        sexteto_intra.append(n['code'])
+
+            # Rellenar
+            while len(sexteto_intra) < 6:
+                for n in sorted_due: # Rellenar con atrasados
+                    if n['code'] not in sexteto_intra:
+                        sexteto_intra.append(n['code'])
+                        break
+            
+            # Calcular score
+            feats_intra = [self.number_features.get(str(c), {'freq_score': 0, 'atraso_score': 0}) for c in sexteto_intra]
+            score_intra = np.mean([(f['freq_score'] + f['atraso_score'])/2 for f in feats_intra])
+
+            candidates.append({
+                "numeros": sexteto_intra,
+                "tipo": "INTRA_DIA",
+                "score": round(score_intra, 2),
+                "desc": desc_intra
+            })
 
         return candidates
 

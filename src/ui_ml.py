@@ -133,8 +133,8 @@ def render_ml_tab(data, engine):
                         data_preds = []
                         for p in preds[:5]: # Mostrar Top 5
                             data_preds.append({
-                                "Ranking": int(p.ranking),
-                                "Número": str(p.numero), # Asegurar string para evitar ArrowTypeError
+                                "Ranking": str(p.ranking), # String para evitar problemas
+                                "Número": str(p.numero), 
                                 "Animal": str(p.nombre),
                                 "Probabilidad": float(p.probabilidad)
                             })
@@ -142,7 +142,7 @@ def render_ml_tab(data, engine):
                         df_preds = pd.DataFrame(data_preds)
                         # Forzar tipos explícitamente para evitar ArrowTypeError
                         if not df_preds.empty:
-                            df_preds["Ranking"] = df_preds["Ranking"].astype(int) 
+                            df_preds["Ranking"] = df_preds["Ranking"].astype(str)
                             df_preds["Número"] = df_preds["Número"].astype(str)
                             df_preds["Animal"] = df_preds["Animal"].astype(str)
                             df_preds["Probabilidad"] = df_preds["Probabilidad"].astype(float)
@@ -150,9 +150,8 @@ def render_ml_tab(data, engine):
                         st.dataframe(
                             df_preds,
                             column_config={
-                                "Ranking": st.column_config.NumberColumn(
+                                "Ranking": st.column_config.TextColumn(
                                     "Rank",
-                                    format="%d",
                                     width="small"
                                 ),
                                 "Número": st.column_config.TextColumn(
@@ -212,13 +211,25 @@ def render_ml_tab(data, engine):
                     df_display['acierto_top3'] = df_display['acierto_top3'].apply(map_bool)
                     
                     # Formatear resultado real
-                    df_display['numero_real'] = df_display['numero_real'].apply(lambda x: str(x) if x != -1 else "Pendiente")
+                    df_display['numero_real'] = df_display['numero_real'].apply(lambda x: str(x) if x != -1 else "Pendiente").astype(str)
                     
+                    # Ensure fecha is string to avoid PyArrow errors
+                    if 'fecha' in df_display.columns:
+                        df_display['fecha'] = df_display['fecha'].astype(str)
+                    if 'hora' in df_display.columns:
+                        df_display['hora'] = df_display['hora'].astype(str)
+                    if 'modelo' in df_display.columns:
+                        df_display['modelo'] = df_display['modelo'].astype(str)
+                    if 'top1' in df_display.columns:
+                        df_display['top1'] = df_display['top1'].astype(str)
+                    if 'top3' in df_display.columns:
+                        df_display['top3'] = df_display['top3'].apply(lambda x: str(x)).astype(str)
+
                     st.dataframe(
                         df_display[['fecha', 'hora', 'modelo', 'top1', 'top3', 'numero_real', 'acierto_top1', 'acierto_top3']],
                         width="stretch",
                         column_config={
-                            "top3": st.column_config.ListColumn("Top 3"),
+                            "top3": st.column_config.TextColumn("Top 3"),
                             "acierto_top1": st.column_config.TextColumn("Hit Top 1"),
                             "acierto_top3": st.column_config.TextColumn("Hit Top 3"),
                         }

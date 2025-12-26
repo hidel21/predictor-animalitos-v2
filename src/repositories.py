@@ -34,11 +34,13 @@ def insertar_sorteos(engine: Engine, historial_df: pd.DataFrame):
                 num = int(row['numero'])
             except ValueError:
                 continue # Saltar si no es número válido
+            
+            loteria = row.get('loteria', 'La Granjita')
 
             query = text("""
-                INSERT INTO sorteos (fecha, hora, numero_real)
-                VALUES (:fecha, :hora, :numero)
-                ON CONFLICT (fecha, hora) DO UPDATE
+                INSERT INTO sorteos (fecha, hora, numero_real, loteria)
+                VALUES (:fecha, :hora, :numero, :loteria)
+                ON CONFLICT (fecha, hora, loteria) DO UPDATE
                 SET numero_real = EXCLUDED.numero_real
                 WHERE sorteos.numero_real = -1 OR sorteos.numero_real IS NULL
             """)
@@ -46,7 +48,8 @@ def insertar_sorteos(engine: Engine, historial_df: pd.DataFrame):
             conn.execute(query, {
                 "fecha": row['fecha'],
                 "hora": row['hora'],
-                "numero": num
+                "numero": num,
+                "loteria": loteria
             })
 
 def guardar_prediccion(

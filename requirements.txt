@@ -12,3 +12,5 @@ plotly
 psycopg2-binary
 sqlalchemy
 openai
+google-genai
+google-genai

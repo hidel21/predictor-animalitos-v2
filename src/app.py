@@ -14,6 +14,7 @@ import pytz
 
 from src.date_utils import clamp_date, to_date
 
+from src.config import LOTERIAS
 from src.historial_client import HistorialClient
 from src.model import MarkovModel
 from src.constantes import ANIMALITOS, COLORES, SECTORES
@@ -476,21 +477,29 @@ def render_backtest_tab(data, start_date, end_date):
                 st.warning("No se generaron resultados. Verifica el rango de fechas.")
             else:
                 st.success(f"Simulación completada sobre {len(raw)} sorteos.")
-                
+
                 # Tabla Resumen
                 st.markdown("### 📊 Resultados Globales")
-                
+
                 summary_rows = []
                 for model, metrics in summary.items():
                     summary_rows.append({
-                        "Modelo": model,
-                        "Sorteos": metrics["Total"],
+                        "Modelo": str(model),
+                        "Sorteos": int(metrics["Total"]),
                         "Acierto Top 1": f"{metrics['Top1']} ({metrics['Top1_Pct']*100:.1f}%)",
                         "Acierto Top 3": f"{metrics['Top3']} ({metrics['Top3_Pct']*100:.1f}%)",
                         "Acierto Top 5": f"{metrics['Top5']} ({metrics['Top5_Pct']*100:.1f}%)",
                     })
-                    
-                st.dataframe(summary_rows, width="stretch")
+
+                # Convertir a DataFrame y forzar tipos
+                df_summary = pd.DataFrame(summary_rows)
+                if not df_summary.empty:
+                    df_summary["Modelo"] = df_summary["Modelo"].astype(str)
+                    df_summary["Sorteos"] = df_summary["Sorteos"].astype(int)
+                    df_summary["Acierto Top 1"] = df_summary["Acierto Top 1"].astype(str)
+                    df_summary["Acierto Top 3"] = df_summary["Acierto Top 3"].astype(str)
+                    df_summary["Acierto Top 5"] = df_summary["Acierto Top 5"].astype(str)
+                st.dataframe(df_summary, width="stretch")
                 
                 # Gráficos
                 st.markdown("### 📈 Rendimiento Acumulado")
@@ -548,6 +557,33 @@ def main():
                 conn.execute(text("SELECT 1"))
             st.toast("Conexión a Base de Datos: EXITOSA 🟢", icon="🗄️")
             print("✅ [DB] Conexión a PostgreSQL establecida correctamente.")
+            
+            # Check/Update Schema for Multi-Lottery Support
+            try:
+                with engine.connect() as conn:
+                    # Check if column exists
+                    res = conn.execute(text("SELECT column_name FROM information_schema.columns WHERE table_name='sorteos' AND column_name='loteria'"))
+                    if not res.fetchone():
+                        st.toast("Actualizando esquema de BD (agregando columna loteria)...", icon="🛠️")
+                        with engine.begin() as trans:
+                            trans.execute(text("ALTER TABLE sorteos ADD COLUMN IF NOT EXISTS loteria VARCHAR(50) DEFAULT 'La Granjita'"))
+                            # Update unique constraint
+                            trans.execute(text("ALTER TABLE sorteos DROP CONSTRAINT IF EXISTS uq_sorteo"))
+                            trans.execute(text("ALTER TABLE sorteos ADD CONSTRAINT uq_sorteo UNIQUE (fecha, hora, loteria)"))
+                        
+                        st.toast("Esquema de sorteos actualizado.", icon="✅")
+
+                    # Check if column exists in tripleta_sesiones
+                    res = conn.execute(text("SELECT column_name FROM information_schema.columns WHERE table_name='tripleta_sesiones' AND column_name='loteria'"))
+                    if not res.fetchone():
+                        st.toast("Actualizando esquema de BD (agregando columna loteria a tripleta_sesiones)...", icon="🛠️")
+                        with engine.begin() as trans:
+                            trans.execute(text("ALTER TABLE tripleta_sesiones ADD COLUMN IF NOT EXISTS loteria VARCHAR(50) DEFAULT 'La Granjita'"))
+                        st.toast("Esquema de sesiones actualizado.", icon="✅")
+                        
+            except Exception as e:
+                st.error(f"Error actualizando esquema: {e}")
+                print(f"❌ [DB] Error actualizando esquema: {e}")
         else:
             st.toast("Modo sin persistencia (BD no disponible)", icon="⚠️")
     except Exception as e:
@@ -556,11 +592,31 @@ def main():
         st.error(f"⚠️ Error de conexión a BD: {e}")
         print(f"❌ [DB] Error de conexión: {e}")
 
-    st.title("🐮 Predictor de Animalitos - La Granjita")
+    # st.title("🐮 Predictor de Animalitos - La Granjita")
 
     # Sidebar para controles
     with st.sidebar:
         st.header("Configuración")
+        
+        # Selector de Lotería
+        # Detectar cambio para limpiar historial
+        if 'prev_selected_loteria' not in st.session_state:
+            st.session_state['prev_selected_loteria'] = list(LOTERIAS.keys())[0]
+
+        selected_loteria = st.selectbox("Lotería", list(LOTERIAS.keys()), index=0)
+        
+        if selected_loteria != st.session_state['prev_selected_loteria']:
+            st.session_state['prev_selected_loteria'] = selected_loteria
+            # Limpiar historial para forzar recarga con la nueva lotería
+            if 'historial' in st.session_state:
+                del st.session_state['historial']
+            if 'ml_predictor' in st.session_state:
+                del st.session_state['ml_predictor']
+            st.rerun()
+
+        loteria_config = LOTERIAS[selected_loteria]
+        st.session_state['selected_loteria'] = selected_loteria
+        st.session_state['loteria_config'] = loteria_config
         
         today = date.today()
         start_date = st.date_input(
@@ -615,7 +671,7 @@ def main():
             else:
                 with st.spinner("Cargando historial completo..."):
                     try:
-                        client = HistorialClient()
+                        client = HistorialClient(base_url=loteria_config['historial'])
                         data = client.fetch_historial(
                             start_date.strftime("%Y-%m-%d"),
                             end_date.strftime("%Y-%m-%d")
@@ -632,7 +688,7 @@ def main():
                                             num = k
                                             break
                                     if num:
-                                        rows.append({"fecha": d, "hora": h, "numero": num})
+                                        rows.append({"fecha": d, "hora": h, "numero": num, "loteria": selected_loteria})
                                 
                                 if rows:
                                     df_db = pd.DataFrame(rows)
@@ -661,7 +717,7 @@ def main():
                 status_placeholder.info("🔄 Buscando nuevos resultados...")
                 
                 try:
-                    client = HistorialClient()
+                    client = HistorialClient(base_url=loteria_config['historial'])
                     today_str = date.today().strftime("%Y-%m-%d")
                     
                     # Descargar solo hoy
@@ -678,7 +734,7 @@ def main():
                                         num = k
                                         break
                                 if num:
-                                    rows.append({"fecha": d, "hora": h, "numero": num})
+                                    rows.append({"fecha": d, "hora": h, "numero": num, "loteria": selected_loteria})
                             
                             if rows:
                                 df_db = pd.DataFrame(rows)
@@ -711,6 +767,9 @@ def main():
                     st.warning(f"⚠️ Conexión inestable: {e}")
                     # Actualizamos tiempo para no reintentar inmediatamente en bucle infinito rápido
                     st.session_state['last_update'] = time.time()
+
+    # Título dinámico según lotería seleccionada
+    st.title(f"🐮 Predictor de Animalitos - {selected_loteria}")
 
     # Inicializar Gestor de Patrones en sesión
     if 'gestor_patrones' not in st.session_state:
