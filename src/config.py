@@ -36,6 +36,12 @@ LOTERIAS = {
         "resultados": "https://lotoven.com/animalito/lottorey/resultados/",
         "estadisticas": "https://lotoven.com/animalito/lottorey/estadisticas/",
         "datos": "https://lotoven.com/animalito/lottorey/datos/"
+    },
+    "Lotto Activo RD": {
+        "historial": "https://lotoven.com/animalito/lottoactivordominicana/historial/{start}/{end}/",
+        "resultados": "https://lotoven.com/animalito/lottoactivordominicana/resultados/",
+        "estadisticas": "https://lotoven.com/animalito/lottoactivordominicana/estadisticas/",
+        "datos": "https://lotoven.com/animalito/lottoactivordominicana/datos/"
     }
 }
 
