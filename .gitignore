@@ -12,3 +12,7 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+
+# Modelos validados y datasets locales
+models/
+.evidence/
