@@ -1,8 +1,11 @@
 import pandas as pd
 from sqlalchemy.engine import Engine
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 from typing import List, Dict, Optional, Any
 import json
+import random
+import time
 from datetime import date
 
 def insertar_sorteos(engine: Engine, historial_df: pd.DataFrame):
@@ -53,113 +56,61 @@ def insertar_sorteos(engine: Engine, historial_df: pd.DataFrame):
             })
 
 def guardar_prediccion(
-    engine: Engine, 
+    engine: Engine,
     fecha: date,
     hora: str,
-    modelo: str, 
-    top1: int, 
-    top3: List[int], 
-    top5: Optional[List[int]] = None, 
-    probs: Optional[Dict[str, float]] = None
+    modelo: str,
+    top1: int,
+    top3: List[int],
+    top5: Optional[List[int]] = None,
+    probs: Optional[Dict[str, float]] = None,
+    loteria: str = "La Granjita",
 ):
+    """Conserva una emisión por contenido y sorteo, incluso entre sesiones.
+
+    Un ranking o probabilidades diferentes generan una nueva emisión. Repetir
+    el renderizado no cambia la fecha original ni duplica la misma predicción.
     """
-    Guarda una predicción en la base de datos.
-    Primero busca el ID del sorteo correspondiente. Si no existe el sorteo (futuro),
-    podría requerir lógica adicional, pero por ahora asumimos que se guarda 
-    cuando se genera la predicción.
-    
-    NOTA: Si el sorteo es futuro, no existirá en la tabla 'sorteos' si esta solo guarda resultados.
-    Sin embargo, la HU dice "sorteo_id (int, FK -> sorteos.id)".
-    Esto implica que para guardar una predicción, el sorteo debe existir en la tabla `sorteos`.
-    Si `sorteos` es solo para HISTORIAL (pasado), tenemos un problema conceptual para predicciones futuras.
-    
-    Asumiremos para esta implementación que insertamos el sorteo "placeholder" si no existe, 
-    o que solo guardamos predicciones de sorteos que ya tienen registro (aunque sea sin resultado).
-    
-    PERO, lo más lógico para un predictor es:
-    1. Insertar el sorteo futuro con numero_real NULL (si la tabla lo permite).
-    2. O cambiar la FK para que sea nullable o manejarlo diferente.
-    
-    Dado el schema: `numero_real INTEGER NOT NULL`. Esto impide guardar sorteos futuros sin resultado.
-    
-    SOLUCIÓN ADAPTADA:
-    Buscaremos el sorteo. Si no existe, NO PODEMOS guardar la predicción con la FK estricta actual 
-    y la restricción NOT NULL en numero_real.
-    
-    Sin embargo, el usuario pidió: "Cuando el bot genera predicciones para un sorteo... obtener sorteo_id... llamar a guardar_prediccion".
-    
-    Si el sorteo es futuro, no tendremos sorteo_id.
-    
-    Voy a asumir que el usuario quiere guardar predicciones para validación POSTERIOR.
-    Si el sorteo no existe, lo insertaremos con un número dummy (-1) o modificaremos la tabla para permitir NULL.
-    Como no puedo cambiar el DDL aprobado fácilmente, voy a intentar buscar el sorteo.
-    Si no existe, lanzaré un warning o lo omitiré por ahora, O (mejor) insertaré el sorteo con -1 
-    y luego se actualizará con el real.
-    
-    Mejor estrategia: Modificar el INSERT de sorteos para permitir NULL en numero_real sería lo ideal, 
-    pero el schema dice NOT NULL.
-    
-    Vamos a asumir que esta función se llama cuando YA TENEMOS el resultado (backtesting) O 
-    que el usuario aceptará que insertemos un placeholder.
-    
-    Para cumplir estrictamente:
-    "obtener sorteo_id desde la tabla sorteos (fecha/hora)."
-    
-    Si no existe, retornamos sin guardar (o logueamos error).
-    """
-    
-    # Serializar probs a JSON
-    probs_json = json.dumps(probs) if probs else None
-    
+    params = {
+        "fecha": fecha, "hora": hora, "loteria": loteria,
+        "modelo": modelo, "top1": top1, "top3": top3, "top5": top5,
+        "probs": json.dumps(probs) if probs is not None else None,
+    }
     with engine.begin() as conn:
-        # 1. Buscar sorteo_id
-        query_sorteo = text("SELECT id FROM sorteos WHERE fecha = :fecha AND hora = :hora")
-        result = conn.execute(query_sorteo, {"fecha": fecha, "hora": hora}).fetchone()
-        
-        if not result:
-            # No existe el sorteo. Insertamos un placeholder para poder guardar la predicción.
-            # Usamos numero_real = -1 para indicar que está pendiente/desconocido.
-            try:
-                query_placeholder = text("""
-                    INSERT INTO sorteos (fecha, hora, numero_real)
-                    VALUES (:fecha, :hora, -1)
-                    RETURNING id
-                """)
-                sorteo_id = conn.execute(query_placeholder, {"fecha": fecha, "hora": hora}).scalar()
-                print(f"ℹ️ Sorteo placeholder creado para {fecha} {hora} (ID: {sorteo_id})")
-            except Exception as e:
-                # Si falla (probablemente por UniqueViolation si otro proceso lo creó), intentamos buscar de nuevo
-                # print(f"⚠️ Error creando sorteo placeholder (posible concurrencia): {e}")
-                result_retry = conn.execute(query_sorteo, {"fecha": fecha, "hora": hora}).fetchone()
-                if result_retry:
-                    sorteo_id = result_retry[0]
-                else:
-                    print("❌ No se pudo recuperar el ID del sorteo tras fallo de inserción.")
-                    return False
-        else:
-            sorteo_id = result[0]
-        
-        # 2. Insertar predicción
-        query_insert = text("""
+        # ON CONFLICT evita dejar una transacción abortada si otra sesión
+        # crea el mismo placeholder. Nunca reemplaza un resultado real.
+        conn.execute(text("""
+            INSERT INTO sorteos (fecha, hora, numero_real, loteria)
+            VALUES (:fecha, :hora, -1, :loteria)
+            ON CONFLICT (fecha, hora, loteria) DO NOTHING
+        """), params)
+        params["sorteo_id"] = conn.execute(text("""
+            SELECT id FROM sorteos
+            WHERE fecha = :fecha AND hora = :hora AND loteria = :loteria
+        """), params).scalar_one()
+        # Todos los escritores de esta función usan la misma clave por sorteo.
+        conn.execute(text("SELECT pg_advisory_xact_lock(72842, :sorteo_id)"), params)
+        conn.execute(text("""
             INSERT INTO predicciones (sorteo_id, modelo, top1, top3, top5, probs)
-            VALUES (:sorteo_id, :modelo, :top1, :top3, :top5, :probs)
-        """)
-        
-        conn.execute(query_insert, {
-            "sorteo_id": sorteo_id,
-            "modelo": modelo,
-            "top1": top1,
-            "top3": top3,
-            "top5": top5,
-            "probs": probs_json
-        })
-        return True
+            SELECT :sorteo_id, :modelo, :top1, :top3, :top5, CAST(:probs AS jsonb)
+            WHERE NOT EXISTS (
+                SELECT 1 FROM predicciones
+                WHERE sorteo_id = :sorteo_id
+                  AND modelo IS NOT DISTINCT FROM CAST(:modelo AS text)
+                  AND top1 IS NOT DISTINCT FROM CAST(:top1 AS integer)
+                  AND top3 IS NOT DISTINCT FROM CAST(:top3 AS integer[])
+                  AND top5 IS NOT DISTINCT FROM CAST(:top5 AS integer[])
+                  AND probs IS NOT DISTINCT FROM CAST(:probs AS jsonb)
+            )
+        """), params)
+    return True
 
 def actualizar_aciertos_predicciones(engine: Engine):
     """
     Actualiza las columnas acierto_top1 y acierto_top3 en la tabla predicciones
     comparando con el resultado real en la tabla sorteos.
-    Ignora sorteos con numero_real = -1 (placeholders).
+    Serializa las validaciones entre procesos y solo escribe valores diferentes.
+    Los placeholders (-1) conservan ambos aciertos en NULL.
     """
     query = text("""
         UPDATE predicciones p
@@ -168,12 +119,30 @@ def actualizar_aciertos_predicciones(engine: Engine):
             acierto_top3 = CASE WHEN s.numero_real = -1 THEN NULL ELSE (s.numero_real = ANY(p.top3)) END
         FROM sorteos s
         WHERE p.sorteo_id = s.id
-          AND (p.acierto_top1 IS NULL OR s.numero_real = -1) -- Actualizar pendientes O corregir placeholders mal marcados
           AND s.numero_real IS NOT NULL
+          AND (
+              p.acierto_top1 IS DISTINCT FROM
+                  CASE WHEN s.numero_real = -1 THEN NULL ELSE (p.top1 = s.numero_real) END
+              OR p.acierto_top3 IS DISTINCT FROM
+                  CASE WHEN s.numero_real = -1 THEN NULL ELSE (s.numero_real = ANY(p.top3)) END
+          )
     """)
     
-    with engine.begin() as conn:
-        conn.execute(query)
+    for intento in range(3):
+        try:
+            with engine.begin() as conn:
+                # Clave fija reservada para validar predicciones. El bloqueo se
+                # libera al terminar la transacción, incluso si hay rollback.
+                # Debe adquirirse antes del UPDATE y en una sentencia separada.
+                conn.execute(text("SELECT pg_advisory_xact_lock(72841, 1)"))
+                conn.execute(query)
+            return
+        except DBAPIError as exc:
+            # engine.begin() ya revirtió la transacción fallida. Cada reintento
+            # abre una nueva; otros errores de BD se propagan sin ocultarlos.
+            if getattr(exc.orig, "pgcode", None) != "40P01" or intento == 2:
+                raise
+            time.sleep(0.1 * (2 ** intento) + random.uniform(0, 0.1))
 
 def obtener_ultimas_predicciones(engine: Engine, limit: int = 10) -> pd.DataFrame:
     """

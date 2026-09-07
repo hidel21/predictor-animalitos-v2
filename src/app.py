@@ -1514,7 +1514,8 @@ def main():
                     top1, 
                     top3, 
                     top5, 
-                    probs
+                    probs,
+                    loteria=selected_loteria,
                 )
             except Exception as e:
                 print(f"Error guardando predicción Recomendador: {e}")
