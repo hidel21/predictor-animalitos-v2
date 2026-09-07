@@ -448,10 +448,13 @@ def render_backtest_tab(data, start_date, end_date):
         )
         
     st.markdown("##### Modelos a Evaluar")
-    c_m1, c_m2, c_m3 = st.columns(3)
+    c_m1, c_m2, c_m3, c_m4 = st.columns(4)
     use_markov = c_m1.checkbox("Márkov", value=True)
-    use_ml = c_m2.checkbox("IA (ML)", value=HAS_ML, disabled=not HAS_ML)
-    use_rec = c_m3.checkbox("Recomendador", value=False, help="Más lento, recalcula todo.")
+    use_refractario = c_m2.checkbox(
+        "Refractario", value=True,
+        help="Pondera cada animalito según los sorteos que lleva sin salir.")
+    use_ml = c_m3.checkbox("IA (ML)", value=HAS_ML, disabled=not HAS_ML)
+    use_rec = c_m4.checkbox("Recomendador", value=False, help="Más lento, recalcula todo.")
     
     if st.button("🚀 Ejecutar Backtest", type="primary"):
         with st.spinner("Ejecutando simulación histórica... Esto puede tardar unos segundos."):
@@ -460,6 +463,7 @@ def render_backtest_tab(data, start_date, end_date):
             
             models_cfg = {
                 "Markov": use_markov,
+                "Refractario": use_refractario,
                 "ML": use_ml,
                 "Recomendador": use_rec
             }

@@ -7,6 +7,46 @@ from src.repositories import guardar_prediccion, obtener_ultimas_predicciones
 from src.predictive_engine import PredictiveEngine
 from src.features import FeatureEngineer
 
+def _render_evidencia(report):
+    """Muestra qué estrategia se eligió y cuánto rindió fuera de la muestra de decisión."""
+    final = report.get("prueba_final", {})
+    azar = report.get("uniforme_final", {})
+    total = final.get("Total", 0)
+    if not total:
+        return
+
+    if report.get("ventaja_validacion"):
+        st.success(f"Estrategia seleccionada: **{report['estrategia']}** "
+                   f"(superó a «{report['referencia']}» en la validación).")
+    else:
+        st.warning(f"Ninguna estrategia demostró ventaja sobre el azar; se usa "
+                   f"**{report['estrategia']}**. Las predicciones de abajo no baten al azar.")
+
+    st.caption(f"Prueba final sobre {total} sorteos que no intervinieron en elegir la estrategia.")
+    columnas = st.columns(4)
+    for columna, clave, etiqueta in zip(columnas, ("Top1_Pct", "Top3_Pct", "Top5_Pct"),
+                                        ("Acierto Top 1", "Acierto Top 3", "Acierto Top 5")):
+        base = azar.get(clave, 0)
+        valor = final.get(clave, 0)
+        columna.metric(etiqueta, f"{valor*100:.1f}%",
+                       f"{(valor-base)*100:+.1f} pts vs azar" if base else None)
+    columnas[3].metric("Log-loss", f"{final.get('LogLoss', 0):.4f}",
+                       f"{final.get('LogLoss', 0)-azar.get('LogLoss', 0):+.4f} vs azar",
+                       delta_color="inverse")
+
+    refractario = report.get("refractario")
+    if refractario:
+        with st.expander("¿Qué aprendió el modelo sobre las repeticiones?"):
+            st.caption(
+                "Peso de cada animalito según los sorteos que lleva sin salir, tomando como "
+                "referencia 1.00 el de los que llevan 37 o más. Por debajo de 1.00 significa que "
+                "esta lotería reparte casi sin reposición: lo recién salido tarda en volver.")
+            st.dataframe(pd.DataFrame({
+                "Sorteos sin salir": refractario["tramos"],
+                "Peso relativo": [round(valor, 2) for valor in refractario["peso_relativo"]],
+            }), hide_index=True, width="stretch")
+
+
 def render_ml_tab(data, engine):
     st.subheader("🧠 Motor Predictivo de Machine Learning (IA)")
     
@@ -15,19 +55,24 @@ def render_ml_tab(data, engine):
         st.code("pip install scikit-learn numpy", language="bash")
     else:
         st.markdown("""
-        Este módulo utiliza un modelo **Random Forest** entrenado con el historial para detectar patrones complejos no lineales.
-        Analiza variables como: día de la semana, hora, y secuencia de los últimos 3 resultados.
+        Este módulo compara varias estrategias sobre el historial (frecuencia, horario, Markov,
+        refractario y Random Forest), **elige la única que demuestre ventaja** en un tramo de
+        validación y la mide después contra un tramo final que no participó en la decisión.
+        Si ninguna supera al azar, el módulo lo dice en lugar de inventar una predicción.
         """)
         
-        # Inicializar predictor en sesión si no existe
+        # Cada lotería tiene su propio modelo: reiniciar al cambiar de lotería evita
+        # predecir una con la estrategia y los pesos aprendidos de otra.
+        loteria = st.session_state.get("selected_loteria", "La Granjita")
+        if st.session_state.get('ml_predictor_loteria') != loteria:
+            st.session_state.pop('ml_predictor', None)
+            st.session_state['ml_predictor_loteria'] = loteria
+
         if 'ml_predictor' not in st.session_state:
-            # Intentar cargar modelo guardado
-            pred_temp = MLPredictor(data)
+            pred_temp = MLPredictor(data, loteria=loteria)
             if pred_temp.load_model():
-                st.session_state['ml_predictor'] = pred_temp
-                st.toast("Modelo ML cargado desde disco.", icon="💾")
-            else:
-                st.session_state['ml_predictor'] = pred_temp
+                st.toast(f"Modelo de {loteria} cargado desde disco.", icon="💾")
+            st.session_state['ml_predictor'] = pred_temp
         
         predictor = st.session_state['ml_predictor']
         # Actualizar datos si cambiaron (ej. tiempo real)
@@ -38,9 +83,11 @@ def render_ml_tab(data, engine):
         with col_train:
             if st.button("🧠 Entrenar Modelo", type="primary"):
                 with st.spinner("Entrenando modelo de IA..."):
-                    predictor.train()
-                    predictor.save_model() # Guardar tras entrenar
-                    st.success("Modelo entrenado y guardado correctamente.")
+                    if predictor.train():
+                        predictor.save_model()
+                        st.success("Modelo entrenado y guardado correctamente.")
+                    else:
+                        st.error(predictor.training_error or "No se pudo entrenar el modelo.")
         
         with col_status:
             if predictor.is_trained:
@@ -53,8 +100,13 @@ def render_ml_tab(data, engine):
                 
                 time_str = last_time.strftime('%Y-%m-%d %H:%M:%S') if isinstance(last_time, datetime) else str(last_time)
                 st.success(f"✅ Modelo Activo (Entrenado: {time_str})")
+            elif predictor.training_error:
+                st.error(f"⚠️ {predictor.training_error}")
             else:
                 st.warning("⚠️ Modelo no entrenado. Pulsa el botón para iniciar.")
+
+        if predictor.is_trained and predictor.report:
+            _render_evidencia(predictor.report)
 
         st.divider()
         
@@ -114,7 +166,7 @@ def render_ml_tab(data, engine):
                                 engine, 
                                 d_obj, 
                                 next_hour, 
-                                "ML_RandomForest", 
+                                f"ML_{predictor.strategy}", 
                                 top1, 
                                 top3, 
                                 top5, 

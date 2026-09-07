@@ -153,6 +153,8 @@ class HistorialClient:
                     for i, dia in enumerate(page_dias, start=1):
                         if i >= len(cols):
                             continue
+                        if not start_date <= dia <= end_date:
+                            continue
                         animal_raw = cols[i].get_text(strip=True)
                         if animal_raw:
                             # Normalizar nombre
