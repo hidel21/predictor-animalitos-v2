@@ -118,7 +118,8 @@ def render_ml_tab(data, engine):
                                 top1, 
                                 top3, 
                                 top5, 
-                                probs
+                                probs,
+                                loteria=st.session_state.get("selected_loteria", "La Granjita"),
                             )
                         except Exception as e:
                             print(f"Error guardando predicción ML: {e}")
